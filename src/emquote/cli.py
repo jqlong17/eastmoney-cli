@@ -228,7 +228,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--risk-pct",
         type=float,
         default=0.01,
-        help="单笔最大亏损占资金比例，默认 0.01（即 1%%）",
+        help="单笔最大亏损占资金比例，默认 0.01（百分之一）",
     )
 
     pc = sub.add_parser(
