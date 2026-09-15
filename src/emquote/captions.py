@@ -57,6 +57,22 @@ def caption_for_intraday() -> list[str]:
     ]
 
 
+def caption_for_width(assessment: dict[str, Any] | None = None) -> list[str]:
+    assessment = assessment or {}
+    lines = [
+        "上半图仍是价格与通道；下半图是「相对宽度%」=(上轨−下轨)/中轴，用来看波动与分歧。",
+        "通道变窄（进入绿色窄区）：市场分歧相对小，确定性偏高，条件单轨位更可参考。",
+        "通道变宽（进入橙色宽区）：波动/分歧偏大，不确定性高；宜缩小仓位或等宽度收敛再挂激进单。",
+        "虚线是本段历史宽度的中位数；确定性分越高表示当前相对越窄（研究用，不是买卖指令）。",
+    ]
+    if assessment.get("plan_hint"):
+        lines.append(f"本次评估：{assessment.get('label')} —— {assessment['plan_hint']}")
+    elif assessment.get("label"):
+        lines.append(f"本次评估：{assessment.get('label')}（条件单{assessment.get('reasonableness') or '可参考'}）。")
+    lines.append("横轴只保留交易时段；工具不下单，价格需人工录入东方财富条件单。")
+    return lines
+
+
 def apply_caption(fig: Any, lines: list[str], *, title: str = "读图说明") -> None:
     """在图底部画通俗说明；会略微加高画布并留出页脚空间。"""
     if not lines:

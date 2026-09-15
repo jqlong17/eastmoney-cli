@@ -30,6 +30,7 @@ plot = ["matplotlib>=3.8"]
 emquote = "emquote.cli:main"
 emplot-channel = "emquote.plot_cli:main_channel"
 emplot-pv = "emquote.plot_cli:main_pv"
+emplot-width = "emquote.plot_cli:main_width"
 emplot-kline = "emquote.plot_cli:main_kline"
 emplot-daily = "emquote.plot_cli:main_daily"
 emplot-intraday = "emquote.plot_cli:main_intraday"

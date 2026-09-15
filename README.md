@@ -40,13 +40,14 @@ emquote --help
 
 ## 给 AI / 脚本调用的画图 CLI
 
-安装 `.[plot]` 后提供五个**独立命令**（参数少、预设固定，适合 agent 直接调用）。
+安装 `.[plot]` 后提供六个**独立命令**（参数少、预设固定，适合 agent 直接调用）。
 每张图底部都会带一段「读图说明」，用白话解释通道/均线/分时等含义，方便非技术读者：
 
 | 命令 | 画什么 | 默认 |
 |---|---|---|
 | `emplot-channel` | 价格通道图 + 条件单买/卖/止损 | 通道 `reg,donchian`，5m×10日 |
 | `emplot-pv` | 价量通道图 + 量均线/触轨放量 + 条件单 | 通道 `vwreg,donchian`，5m×10日 |
+| `emplot-width` | 通道宽度 / 确定性（相对宽度%）+ 条件单合理性 | 通道 `vwreg,donchian`，5m×10日 |
 | `emplot-kline` | K 线蜡烛图 + MA5/10/20 + 成交量 | 5m×10日 |
 | `emplot-daily` | 日线趋势 + MA5/10/20/60 + 成交量 | 1d×120日 |
 | `emplot-intraday` | 分时辅图（可选，非设单主依据） | 1m×最近交易日 |
@@ -55,6 +56,7 @@ emquote --help
 # 在线
 emplot-channel 603606.SH -o channel.png
 emplot-pv 603606.SH -o price-volume.png
+emplot-width 603606.SH -o width.png
 emplot-kline 603606.SH -o kline.png
 emplot-daily 603606.SH -o daily.png
 emplot-intraday 603606.SH -o intraday.png
@@ -62,15 +64,17 @@ emplot-intraday 603606.SH -o intraday.png
 # 离线样例
 emplot-channel --from-json examples/sample-603606-5m.json --days 10 -o channel.png
 emplot-pv --from-json examples/sample-603606-5m.json --days 10 -o price-volume.png
+emplot-width --from-json examples/sample-603606-5m.json --days 10 -o width.png
 emplot-kline --from-json examples/sample-603606-5m.json --days 10 -o kline.png
 emplot-daily --from-json examples/sample-603606-1d.json -o daily.png
 emplot-intraday --from-json examples/sample-603606-5m.json -o intraday.png
 
 # AI 友好：JSON 摘要（图仍会保存）
 emplot-daily 603606.SH -o out.png --json
+emplot-width 603606.SH -o width.png --json
 ```
 
-也可写成子命令：`emquote plot-channel|plot-pv|plot-kline|plot-daily|plot-intraday ...`。
+也可写成子命令：`emquote plot-channel|plot-pv|plot-width|plot-kline|plot-daily|plot-intraday ...`。
 
 
 ## 常用命令
@@ -111,6 +115,8 @@ emplot-channel --from-json examples/sample-603606-5m.json --days 10 \
   -o examples/demo-603606-5m-10d.png
 emplot-pv --from-json examples/sample-603606-5m.json --days 10 \
   -o examples/demo-603606-5m-price-volume.png
+emplot-width --from-json examples/sample-603606-5m.json --days 10 \
+  -o examples/demo-603606-5m-width.png
 ```
 
 示例图：
@@ -122,6 +128,10 @@ emplot-pv --from-json examples/sample-603606-5m.json --days 10 \
 价量通道（`emplot-pv`）：
 
 ![东方电缆 5 分钟价量通道](examples/demo-603606-5m-price-volume.png)
+
+通道宽度 / 确定性（`emplot-width`）：
+
+![东方电缆 5 分钟通道宽度](examples/demo-603606-5m-width.png)
 
 K 线蜡烛（`emplot-kline`）：
 
@@ -144,6 +154,7 @@ K 线蜡烛（`emplot-kline`）：
 | `kline` 多周期 | ✅ | 含「最近 N 日 × 5 分钟」 |
 | `emplot-channel` | ✅ | 价格通道图独立 CLI（AI 调用） |
 | `emplot-pv` | ✅ | 价量通道图独立 CLI（AI 调用） |
+| `emplot-width` | ✅ | 通道宽度/确定性图；窄=分歧小，辅助评估条件单 |
 | `emplot-kline` | ✅ | K 线蜡烛图独立 CLI（AI 调用） |
 | `emplot-daily` | ✅ | 日线均线趋势独立 CLI（AI 调用） |
 | `emplot-intraday` | 分时辅图（可选，非设单主依据） | 1m×最近交易日 |

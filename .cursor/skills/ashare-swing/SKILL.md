@@ -15,7 +15,7 @@ description: >-
 
 ## 产品边界
 
-- ✅ 做：日线定方向 + 5 分钟价量通道定触发带 + 标准化条件单方案
+- ✅ 做：日线定方向 + 5 分钟价量通道定触发带 + 通道宽度看分歧/确定性 + 标准化条件单方案
 - ✅ 做：买入区 / 止盈 / 止损 / 建议有效期（约 3～10 个交易日）/ 失效条件
 - ⚠️ 分时图仅辅证，不作为设单主依据（默认可不画）
 - ❌ 不做：日内超短、打板、竞价、自动下单、盯盘推送
@@ -30,8 +30,8 @@ description: >-
 进度:
 - [ ] 1. 解析标的代码
 - [ ] 2. 拉取报价（可走缓存）
-- [ ] 3. 出主图：日线 / 5m K线 / 价量通道（分时可选）
-- [ ] 4. 生成标准化条件单方案 emquote plan
+- [ ] 3. 出主图：日线 / 5m K线 / 价量通道 / 通道宽度（分时可选）
+- [ ] 4. 生成标准化条件单方案 emquote plan（含宽度确定性评估）
 - [ ] 5. 按模板写波段备注（含有效期与失效条件）
 ```
 
@@ -53,8 +53,8 @@ python .cursor/skills/ashare-swing/scripts/swing_brief.py 603606.SH --with-intra
 脚本产出：
 
 1. 报价 JSON  
-2. 主图 `daily` / `kline` / `pv`（可选 `intraday`）  
-3. `levels` + **`plan`（标准化条件单方案）**  
+2. 主图 `daily` / `kline` / `pv` / `width`（可选 `intraday`）  
+3. `levels` + **`plan`（标准化条件单方案，含宽度确定性）**  
 4. `{outdir}/{code}-brief.json`
 
 手工等价：
@@ -64,12 +64,13 @@ emquote quote 603606.SH --json
 emplot-daily 603606.SH -o /tmp/daily.png --json
 emplot-kline 603606.SH -o /tmp/kline.png --json
 emplot-pv 603606.SH -o /tmp/pv.png --json
+emplot-width 603606.SH -o /tmp/width.png --json
 emquote plan 603606.SH -i 5m --days 10 --channel vwreg,donchian --json
 ```
 
 K 线有本地缓存（`~/.cache/emquote/kline/`）；失败会回退缓存/离线样例。强制重拉用 `--refresh`。
 
-**必须读 PNG + plan 数字**，不要只报路径。
+**必须读 PNG + plan 数字**，不要只报路径。读 `plan.width`：窄=分歧小、条件单更可参考；宽=不确定性高、宜谨慎。
 
 ### 5) 输出模板（必须）
 
@@ -82,6 +83,7 @@ K 线有本地缓存（`~/.cache/emquote/kline/`）；失败会回退缓存/离�
 ### 结论（三句）
 - 方向：{偏强/震荡/偏弱}（看日线）
 - 计划：{观望 / 等回踩买入区 / 等突破} —— 一句话
+- 宽度/确定性：{窄·更可参考 / 中性 / 宽·宜谨慎}（看 width 图与 plan.width）
 - 关键风险：{一句话}
 
 ### 条件单方案（可抄东财）
@@ -102,6 +104,7 @@ K 线有本地缓存（`~/.cache/emquote/kline/`）；失败会回退缓存/离�
 - 日线：`{daily.png}` —— 定方向
 - 5m K 线：`{kline.png}` —— 看结构
 - 价量通道：`{pv.png}` —— 定触发带
+- 通道宽度：`{width.png}` —— 看分歧/确定性（窄更利于设单）
 
 ### 辅图（可选）
 - 分时：仅辅助感受当日强弱，**不作为设单主依据**
@@ -114,4 +117,5 @@ K 线有本地缓存（`~/.cache/emquote/kline/`）；失败会回退缓存/离�
 
 - 主叙事永远是「波段 + 条件单」，不要滑向盯盘/超短
 - 价位必须来自 `emquote plan` / 图上标注
+- 通道偏宽时，在结论里点明「不确定性偏高」，勿假装轨位很精准
 - 禁止保证收益、喊单满仓、伪装成交能力

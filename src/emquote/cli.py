@@ -13,7 +13,7 @@ from .client import EastMoneyClient, QuoteError
 from .levels import parse_channels, suggest_condition_orders
 from .plan import build_condition_plan, print_condition_plan
 from .plotting import plot_close_curve, print_condition_levels
-from .plot_cli import main_channel, main_daily, main_intraday, main_kline, main_pv
+from .plot_cli import main_channel, main_daily, main_intraday, main_kline, main_pv, main_width
 
 
 def _print_quote(q: dict[str, Any]) -> None:
@@ -159,6 +159,11 @@ def build_parser() -> argparse.ArgumentParser:
         add_help=False,
     )
     sub.add_parser(
+        "plot-width",
+        help="【AI 推荐】通道宽度/确定性图 CLI 别名 → 同 emplot-width",
+        add_help=False,
+    )
+    sub.add_parser(
         "plot-kline",
         help="【AI 推荐】K线蜡烛图 CLI 别名 → 同 emplot-kline",
         add_help=False,
@@ -199,6 +204,8 @@ def main(argv: list[str] | None = None) -> int:
         return main_channel(argv[1:])
     if argv and argv[0] == "plot-pv":
         return main_pv(argv[1:])
+    if argv and argv[0] == "plot-width":
+        return main_width(argv[1:])
     if argv and argv[0] == "plot-kline":
         return main_kline(argv[1:])
     if argv and argv[0] == "plot-daily":

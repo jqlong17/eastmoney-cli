@@ -90,6 +90,41 @@ def build_condition_plan(
     if kind == "donchian":
         invalidation.append(f"突破后迅速回到中轴附近 {mid:.2f}，视为假突破")
 
+    width_assessment = report.get("width_assessment") or {}
+    width_rank = width_assessment.get("rank")
+    # 宽度影响有效期建议：偏宽时略放长观察窗口，偏窄时可偏短
+    if width_rank == "wide":
+        validity = {
+            **validity,
+            "suggested_trading_days": min(
+                int(validity["max_trading_days"]),
+                int(validity["suggested_trading_days"]) + 2,
+            ),
+            "width_note": "通道偏宽：建议略放长有效期，或等宽度收敛后再激进挂单。",
+        }
+    elif width_rank == "narrow":
+        validity = {
+            **validity,
+            "suggested_trading_days": max(
+                int(validity["min_trading_days"]),
+                int(validity["suggested_trading_days"]) - 1,
+            ),
+            "width_note": "通道偏窄：轨位更清晰，有效期可略短，触发后更应及时复盘。",
+        }
+    else:
+        validity = {**validity, "width_note": width_assessment.get("plan_hint") or ""}
+
+    how_to = [
+        "在东方财富创建条件单：买入触发 ≈ 买入区触发价；止盈/止损分开挂或持仓后补挂",
+        f"建议有效期约 {validity['suggested_trading_days']} 个交易日"
+        f"（可在 {validity['min_trading_days']}～{validity['max_trading_days']} 日内自行调整）",
+        "主图看日线定方向 + 5 分钟价量通道定触发带；分时仅作辅图，不作为设单主依据",
+        "通道宽度反映分歧/不确定性：偏窄更利于设单，偏宽宜谨慎或等收敛",
+        "工具只提供研究参考价，需人工录入条件单；不下单、不连接交易",
+    ]
+    if width_assessment.get("plan_hint"):
+        how_to.insert(3, f"宽度评估：{width_assessment['plan_hint']}")
+
     return {
         "symbol": report.get("symbol") or kline.get("symbol") or "",
         "code": report.get("code") or kline.get("code") or "",
@@ -125,15 +160,19 @@ def build_condition_plan(
             "reward_per_share": reward,
             "ratio": rr,
         },
+        "width": {
+            "rank": width_assessment.get("rank"),
+            "label": width_assessment.get("label"),
+            "certainty_score": width_assessment.get("certainty_score"),
+            "last_width_pct": width_assessment.get("last_width_pct"),
+            "mean_width_pct": width_assessment.get("mean_width_pct"),
+            "reasonableness": width_assessment.get("reasonableness"),
+            "plan_hint": width_assessment.get("plan_hint"),
+            "channels": width_assessment.get("channels") or [],
+        },
         "invalidation": invalidation,
-        "how_to_use": [
-            "在东方财富创建条件单：买入触发 ≈ 买入区触发价；止盈/止损分开挂或持仓后补挂",
-            f"建议有效期约 {validity['suggested_trading_days']} 个交易日"
-            f"（可在 {validity['min_trading_days']}～{validity['max_trading_days']} 日内自行调整）",
-            "主图看日线定方向 + 5 分钟价量通道定触发带；分时仅作辅图，不作为设单主依据",
-            "工具只提供研究参考价，需人工录入条件单；不下单、不连接交易",
-        ],
-        "charts_recommended": ["daily", "kline", "pv"],
+        "how_to_use": how_to,
+        "charts_recommended": ["daily", "kline", "pv", "width"],
         "charts_optional": ["intraday"],
         "levels_report": report,
         "disclaimer": report.get("disclaimer")
@@ -175,6 +214,17 @@ def print_condition_plan(plan: dict[str, Any]) -> None:
             f"  约略盈亏比: {rr.get('ratio')}  "
             f"（每单位风险 {rr.get('risk_per_share')} / 空间 {rr.get('reward_per_share')}）"
         )
+    w = plan.get("width") or {}
+    if w:
+        print()
+        print("【通道宽度 / 确定性】")
+        print(
+            f"  状态: {w.get('label')}  合理性: {w.get('reasonableness')}  "
+            f"确定性分: {w.get('certainty_score')}  "
+            f"当前相对宽度: {w.get('last_width_pct')}%"
+        )
+        if w.get("plan_hint"):
+            print(f"  提示: {w.get('plan_hint')}")
     print()
     print("【失效条件】")
     for item in plan.get("invalidation") or []:

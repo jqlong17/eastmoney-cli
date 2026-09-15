@@ -187,6 +187,69 @@ def iter_segments(n: int, segment_size: int) -> list[tuple[int, int]]:
     return bounds
 
 
+def relative_width_pct(upper: float, lower: float, mid: float) -> float:
+    """相对宽度（%）=(上轨−下轨)/|中轴|×100；窄=分歧小/确定性偏高。"""
+    denom = abs(float(mid))
+    if denom < 1e-9:
+        denom = max(abs(float(upper)), abs(float(lower)), 1e-9)
+    return (float(upper) - float(lower)) / denom * 100.0
+
+
+def _percentile(sorted_vals: list[float], q: float) -> float:
+    """线性插值分位数；q∈[0,1]。"""
+    if not sorted_vals:
+        return 0.0
+    if len(sorted_vals) == 1:
+        return sorted_vals[0]
+    q = min(1.0, max(0.0, q))
+    pos = q * (len(sorted_vals) - 1)
+    lo = int(pos)
+    hi = min(lo + 1, len(sorted_vals) - 1)
+    frac = pos - lo
+    return sorted_vals[lo] * (1.0 - frac) + sorted_vals[hi] * frac
+
+
+def _certainty_from_width(last_pct: float, series_pct: list[float]) -> dict[str, Any]:
+    """用当前宽度相对历史分位，给出确定性标签（研究用）。"""
+    clean = sorted(v for v in series_pct if v is not None and v >= 0)
+    if not clean:
+        return {
+            "label": "未知",
+            "rank": "unknown",
+            "certainty_score": None,
+            "note": "宽度序列为空，无法评估确定性",
+        }
+    p33 = _percentile(clean, 0.33)
+    p50 = _percentile(clean, 0.50)
+    p66 = _percentile(clean, 0.66)
+    # 分数：越窄越高（0～100）；用相对分位反转
+    # rank_frac≈0 最窄，≈1 最宽
+    below = sum(1 for v in clean if v < last_pct)
+    equal = sum(1 for v in clean if v == last_pct)
+    rank_frac = (below + 0.5 * equal) / len(clean)
+    score = round(max(0.0, min(100.0, (1.0 - rank_frac) * 100.0)), 1)
+
+    if last_pct <= p33:
+        label, rank = "窄·确定性偏高", "narrow"
+        note = "通道偏窄：近期波动/分歧相对小，条件单轨位更可参考；但仍需设止损。"
+    elif last_pct >= p66:
+        label, rank = "宽·不确定性偏高", "wide"
+        note = "通道偏宽：波动或分歧偏大，触发带噪声更大；宜缩小仓位或拉长观察，勿被虚高盈亏比迷惑。"
+    else:
+        label, rank = "中性", "neutral"
+        note = "通道宽度处于中位：条件单可挂，但需结合日线方向与放量确认。"
+
+    return {
+        "label": label,
+        "rank": rank,
+        "certainty_score": score,
+        "p33_pct": round(p33, 3),
+        "p50_pct": round(p50, 3),
+        "p66_pct": round(p66, 3),
+        "note": note,
+    }
+
+
 def _channel_on_slice(
     bars: list[dict[str, Any]],
     *,
@@ -213,6 +276,11 @@ def _channel_on_slice(
     else:
         raise ValueError(f"未知通道: {kind}")
 
+    width_abs = [float(u) - float(lo) for u, lo in zip(up_s, lo_s)]
+    width_pct = [
+        relative_width_pct(u, lo, m) for u, lo, m in zip(up_s, lo_s, mid_s)
+    ]
+
     return {
         "kind": kind,
         "label": label if segment_index == 0 else f"{label}#{segment_index + 1}",
@@ -223,9 +291,13 @@ def _channel_on_slice(
         "mid": mid_s,
         "upper": up_s,
         "lower": lo_s,
+        "width_abs": width_abs,
+        "width_pct": width_pct,
         "last_mid": round_price(mid_s[-1]),
         "last_upper": round_price(up_s[-1]),
         "last_lower": round_price(lo_s[-1]),
+        "last_width_abs": round(width_abs[-1], 4),
+        "last_width_pct": round(width_pct[-1], 3),
     }
 
 
@@ -299,6 +371,151 @@ def compute_channel(
         **last,
         "segments": segments,
         "label": f"{last['label']}×{len(segments)}段" if full_range and len(segments) > 1 else last["label"],
+    }
+
+
+def stitch_width_series(
+    n_bars: int,
+    segments: list[dict[str, Any]],
+) -> tuple[list[float | None], list[float | None]]:
+    """把分段 width_pct / width_abs 拼成与 bars 对齐的全序列。"""
+    pct: list[float | None] = [None] * n_bars
+    abs_w: list[float | None] = [None] * n_bars
+    for seg in segments:
+        start = int(seg["start"])
+        end = int(seg["end"])
+        wp = seg.get("width_pct") or []
+        wa = seg.get("width_abs") or []
+        for i, (p, a) in enumerate(zip(wp, wa)):
+            idx = start + i
+            if idx >= end or idx >= n_bars:
+                break
+            pct[idx] = float(p)
+            abs_w[idx] = float(a)
+    return pct, abs_w
+
+
+def compute_channel_width(
+    bars: list[dict[str, Any]],
+    *,
+    kind: str,
+    window: int = 0,
+    width: float = 2.0,
+    interval: str = "5m",
+    full_range: bool = True,
+) -> dict[str, Any]:
+    """通道宽度序列 + 确定性评估。
+
+    相对宽度 width_pct = (上轨−下轨)/|中轴|×100：
+    - 窄 → 市场分歧小、确定性偏高
+    - 宽 → 波动/分歧大、不确定性偏高
+    """
+    packed = compute_channel(
+        bars,
+        kind=kind,
+        window=window,
+        width=width,
+        interval=interval,
+        full_range=full_range,
+    )
+    segments = packed.get("segments") or [packed]
+    n = len(bars)
+    series_pct, series_abs = stitch_width_series(n, segments)
+    valid_pct = [float(v) for v in series_pct if v is not None]
+    last_pct = float(packed.get("last_width_pct") or (valid_pct[-1] if valid_pct else 0.0))
+    last_abs = float(packed.get("last_width_abs") or (series_abs[-1] or 0.0))
+    certainty = _certainty_from_width(last_pct, valid_pct)
+    mean_pct = sum(valid_pct) / len(valid_pct) if valid_pct else 0.0
+    return {
+        "kind": kind,
+        "label": packed["label"],
+        "color": packed.get("color") or CHANNEL_COLORS.get(kind, "#333333"),
+        "segments": segments,
+        "series_pct": series_pct,
+        "series_abs": series_abs,
+        "last_width_pct": round(last_pct, 3),
+        "last_width_abs": round(last_abs, 4),
+        "mean_width_pct": round(mean_pct, 3),
+        "min_width_pct": round(min(valid_pct), 3) if valid_pct else None,
+        "max_width_pct": round(max(valid_pct), 3) if valid_pct else None,
+        "certainty": certainty,
+        "last_mid": packed["last_mid"],
+        "last_upper": packed["last_upper"],
+        "last_lower": packed["last_lower"],
+    }
+
+
+def assess_width_for_plan(
+    width_reports: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """综合多通道宽度，给条件单「是否更合理」的研究备注。"""
+    if not width_reports:
+        return {
+            "rank": "unknown",
+            "label": "未知",
+            "certainty_score": None,
+            "plan_hint": "无宽度数据",
+            "channels": [],
+        }
+
+    # 优先用价量回归，其次回归，再 Donchian
+    preferred = None
+    for pref in ("vwreg", "reg", "donchian", "hl"):
+        for item in width_reports:
+            if item.get("kind") == pref:
+                preferred = item
+                break
+        if preferred:
+            break
+    preferred = preferred or width_reports[0]
+    cert = preferred.get("certainty") or {}
+    rank = cert.get("rank") or "unknown"
+    score = cert.get("certainty_score")
+
+    if rank == "narrow":
+        plan_hint = (
+            "通道偏窄：分歧相对小，条件单买/卖/止损轨位更有参考价值；"
+            "可按方案挂单，但仍须设止损与有效期。"
+        )
+        reasonableness = "更合理（轨位清晰）"
+    elif rank == "wide":
+        plan_hint = (
+            "通道偏宽：不确定性偏高，条件单价易被噪声拉宽；"
+            "建议缩小仓位、拉长观察或等宽度收敛后再挂激进单。"
+        )
+        reasonableness = "谨慎（波动偏大）"
+    elif rank == "neutral":
+        plan_hint = (
+            "通道宽度中性：条件单可挂，宜用日线定方向 + 放量确认；"
+            "有效期按默认 3～10 个交易日即可。"
+        )
+        reasonableness = "可参考"
+    else:
+        plan_hint = "宽度状态未知，仅按轨位设单并严格止损。"
+        reasonableness = "未知"
+
+    return {
+        "primary_kind": preferred.get("kind"),
+        "primary_label": preferred.get("label"),
+        "rank": rank,
+        "label": cert.get("label") or "未知",
+        "certainty_score": score,
+        "last_width_pct": preferred.get("last_width_pct"),
+        "mean_width_pct": preferred.get("mean_width_pct"),
+        "reasonableness": reasonableness,
+        "plan_hint": plan_hint,
+        "note": cert.get("note"),
+        "channels": [
+            {
+                "kind": w.get("kind"),
+                "label": w.get("label"),
+                "last_width_pct": w.get("last_width_pct"),
+                "certainty_score": (w.get("certainty") or {}).get("certainty_score"),
+                "rank": (w.get("certainty") or {}).get("rank"),
+                "label_certainty": (w.get("certainty") or {}).get("label"),
+            }
+            for w in width_reports
+        ],
     }
 
 
@@ -416,9 +633,10 @@ def suggest_condition_orders(
     last = bars[-1]
     last_close = round_price(last["close"])
     suggestions: list[dict[str, Any]] = []
+    width_reports: list[dict[str, Any]] = []
 
     for kind in kinds:
-        packed = compute_channel(
+        width_info = compute_channel_width(
             bars,
             kind=kind,
             window=channel_window,
@@ -426,16 +644,21 @@ def suggest_condition_orders(
             interval=str(kline.get("interval") or "5m"),
             full_range=full_range,
         )
-        suggestions.append(
-            _suggestion_from_rails(
-                kind,
-                lower=packed["last_lower"],
-                mid=packed["last_mid"],
-                upper=packed["last_upper"],
-                last_close=last_close,
-                label=packed["label"],
-            )
+        item = _suggestion_from_rails(
+            kind,
+            lower=width_info["last_lower"],
+            mid=width_info["last_mid"],
+            upper=width_info["last_upper"],
+            last_close=last_close,
+            label=width_info["label"],
         )
+        item["last_width_pct"] = width_info["last_width_pct"]
+        item["last_width_abs"] = width_info["last_width_abs"]
+        item["certainty"] = width_info["certainty"]
+        suggestions.append(item)
+        width_reports.append(width_info)
+
+    width_assessment = assess_width_for_plan(width_reports)
 
     return {
         "symbol": kline.get("symbol") or "",
@@ -449,4 +672,5 @@ def suggest_condition_orders(
             "请人工录入东方财富条件单，本工具不下单、不连接交易。"
         ),
         "suggestions": suggestions,
+        "width_assessment": width_assessment,
     }

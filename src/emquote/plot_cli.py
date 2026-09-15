@@ -3,6 +3,7 @@
 通道图：
 - emplot-channel：价格通道（回归 + Donchian）+ 条件单价
 - emplot-pv：价量通道（价量加权回归 + Donchian）+ 条件单价 + 触轨放量
+- emplot-width：通道宽度 / 确定性（相对宽度%）+ 条件单合理性评估
 
 分析图：
 - emplot-kline：蜡烛 K 线 + MA
@@ -22,7 +23,7 @@ from typing import Any
 
 from .client import EastMoneyClient, QuoteError
 from .levels import parse_channels, suggest_condition_orders
-from .plotting import plot_close_curve, print_condition_levels
+from .plotting import plot_channel_width, plot_close_curve, print_condition_levels
 
 # 与 README 示例图一致的预设
 PRESETS: dict[str, dict[str, Any]] = {
@@ -42,6 +43,14 @@ PRESETS: dict[str, dict[str, Any]] = {
         "default_output": "emquote-price-volume.png",
         "help": "价量加权回归 + Donchian + 量均线/触轨放量 + 条件单标注",
     },
+    "width": {
+        "title": "通道宽度图",
+        "channel": "vwreg,donchian",
+        "channel_window": 96,
+        "channel_width": 2.0,
+        "default_output": "emquote-width.png",
+        "help": "相对宽度%体现波动/分歧；窄=确定性偏高，宽=不确定性偏高；辅助评估条件单",
+    },
 }
 
 
@@ -56,7 +65,11 @@ def _default_output(preset: str, symbol: str | None) -> str:
 
 def _build_parser(preset: str) -> argparse.ArgumentParser:
     meta = PRESETS[preset]
-    prog = "emplot-channel" if preset == "channel" else "emplot-pv"
+    prog = {
+        "channel": "emplot-channel",
+        "pv": "emplot-pv",
+        "width": "emplot-width",
+    }[preset]
     p = argparse.ArgumentParser(
         prog=prog,
         description=f"{meta['title']}：{meta['help']}。只读研究，不下单。",
@@ -126,15 +139,26 @@ def _run_plot(preset: str, argv: list[str] | None = None) -> int:
     try:
         k = _load_kline(client, args)
         out = args.output or _default_output(preset, args.symbol or k.get("symbol"))
-        path = plot_close_curve(
-            k,
-            out,
-            channel=channel,
-            channel_window=args.channel_window,
-            channel_width=args.channel_width,
-            show_levels=not args.no_levels,
-            full_range=not args.single_window,
-        )
+        if preset == "width":
+            path = plot_channel_width(
+                k,
+                out,
+                channel=channel,
+                channel_window=args.channel_window,
+                channel_width=args.channel_width,
+                show_levels=not args.no_levels,
+                full_range=not args.single_window,
+            )
+        else:
+            path = plot_close_curve(
+                k,
+                out,
+                channel=channel,
+                channel_window=args.channel_window,
+                channel_width=args.channel_width,
+                show_levels=not args.no_levels,
+                full_range=not args.single_window,
+            )
         report = None
         if kinds != ["none"]:
             report = suggest_condition_orders(
@@ -156,6 +180,7 @@ def _run_plot(preset: str, argv: list[str] | None = None) -> int:
                 "interval": k.get("interval"),
                 "bars": len(k.get("bars") or []),
                 "levels": report,
+                "width_assessment": (report or {}).get("width_assessment"),
             }
             print(json.dumps(payload, ensure_ascii=False, indent=2))
         else:
@@ -181,6 +206,11 @@ def main_channel(argv: list[str] | None = None) -> int:
 def main_pv(argv: list[str] | None = None) -> int:
     """emplot-pv 入口。"""
     return _run_plot("pv", argv)
+
+
+def main_width(argv: list[str] | None = None) -> int:
+    """emplot-width 入口。"""
+    return _run_plot("width", argv)
 
 
 if __name__ == "__main__":
