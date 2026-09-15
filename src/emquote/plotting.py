@@ -8,6 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from .captions import apply_caption, caption_for_channel
 from .levels import compute_channel, parse_channels, suggest_condition_orders
 
 
@@ -292,6 +293,11 @@ def plot_close_curve(
         ha="right",
     )
 
+    apply_caption(
+        fig,
+        caption_for_channel(channel, has_levels=bool(primary_suggestion)),
+        title="读图说明（价格/价量通道）",
+    )
     fig.savefig(out)
     plt.close(fig)
     return out

@@ -5,6 +5,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from .captions import (
+    apply_caption,
+    caption_for_daily,
+    caption_for_intraday,
+    caption_for_kline,
+)
+
 
 def _setup_chinese_font() -> None:
     import matplotlib.pyplot as plt
@@ -118,6 +125,9 @@ def _finish_axes(
     bars: list[dict[str, Any]],
     title: str,
     out: Path,
+    *,
+    caption_lines: list[str] | None = None,
+    caption_title: str = "读图说明",
 ) -> Path:
     import matplotlib.pyplot as plt
 
@@ -147,6 +157,8 @@ def _finish_axes(
     ax_price.grid(True, alpha=0.25)
     ax_price.tick_params(labelbottom=False)
     ax_price.legend(loc="upper left", fontsize=7, framealpha=0.85, ncol=2)
+    if caption_lines:
+        apply_caption(fig, caption_lines, title=caption_title)
     out.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out)
     plt.close(fig)
@@ -159,6 +171,8 @@ def plot_candles(
     *,
     ma: list[int] | None = None,
     title_suffix: str = "K线（蜡烛）",
+    caption_lines: list[str] | None = None,
+    caption_title: str = "读图说明（K线蜡烛）",
 ) -> Path:
     """蜡烛图 + 成交量 + 可选均线。"""
     try:
@@ -194,7 +208,20 @@ def plot_candles(
     ).strip()
     if ma_bits:
         title = f"{title}\n{'  '.join(ma_bits)}"
-    return _finish_axes(fig, ax_price, ax_vol, bars, title, out)
+    return _finish_axes(
+        fig,
+        ax_price,
+        ax_vol,
+        bars,
+        title,
+        out,
+        caption_lines=(
+            caption_lines
+            if caption_lines is not None
+            else caption_for_kline(ma_windows)
+        ),
+        caption_title=caption_title,
+    )
 
 
 def plot_daily(
@@ -205,7 +232,15 @@ def plot_daily(
 ) -> Path:
     """日线蜡烛 + MA5/10/20/60 + 成交量。"""
     windows = [5, 10, 20, 60] if ma is None else ma
-    return plot_candles(kline, output, ma=windows, title_suffix="日线趋势")
+    return plot_candles(
+        kline,
+        output,
+        ma=windows,
+        title_suffix="日线趋势",
+        caption_lines=caption_for_daily(windows),
+        caption_title="读图说明（日线趋势）",
+    )
+
 
 
 def _last_session_bars(bars: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -314,4 +349,8 @@ def plot_intraday(
         f"{kline.get('name') or ''} {kline.get('symbol') or ''}  分时 {day}  "
         f"现价 {last:.2f}  昨收 {float(pre_close):.2f}  涨跌 {chg:+.2f}%"
     ).strip()
-    return _finish_axes(fig, ax_price, ax_vol, bars, title, out)
+    return _finish_axes(
+        fig, ax_price, ax_vol, bars, title, out,
+        caption_lines=caption_for_intraday(),
+        caption_title="读图说明（分时）",
+    )
