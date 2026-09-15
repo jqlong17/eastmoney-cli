@@ -21,6 +21,20 @@ pip install -e '.[plot]'
 emquote --help
 ```
 
+
+
+## Cursor Skill：中短线看盘
+
+仓库内置 Agent Skill：`.cursor/skills/ashare-swing/`。
+
+用户提到股票代码/炒股/中短线/条件单时，Agent 应：
+
+1. 运行 `python .cursor/skills/ashare-swing/scripts/swing_brief.py <代码> -o /tmp/swing-xxx`
+2. 读图 + `levels` 参考价
+3. 按 skill 模板输出**中短线**研究备注（非投资建议、不下单）
+
+K 线节点不可用时加 `--demo`，或依赖脚本自动回退 `examples/sample-*.json`。
+
 ## 给 AI / 脚本调用的画图 CLI
 
 安装 `.[plot]` 后提供五个**独立命令**（参数少、预设固定，适合 agent 直接调用）。
