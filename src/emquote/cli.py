@@ -81,13 +81,18 @@ def _add_channel_args(sp: argparse.ArgumentParser, *, default: str) -> None:
         "--channel-window",
         type=int,
         default=0,
-        help="通道窗口（根数）；0=用全部可见 bar。短线可试 48/96",
+        help="分段长度（根数）。画全时段时自动切成多段；0=按周期自动估计（5m 约 1 日）",
     )
     sp.add_argument(
         "--channel-width",
         type=float,
         default=2.0,
         help="回归通道宽度（残差标准差倍数），默认 2",
+    )
+    sp.add_argument(
+        "--single-window",
+        action="store_true",
+        help="不切段，只画最近一个窗口的通道（旧行为）",
     )
 
 
@@ -171,6 +176,7 @@ def main(argv: list[str] | None = None) -> int:
                 channel_window=args.channel_window,
                 channel_width=args.channel_width,
                 show_levels=not args.no_levels,
+                full_range=not args.single_window,
             )
             print(f"已保存: {path}")
             print(
@@ -183,6 +189,7 @@ def main(argv: list[str] | None = None) -> int:
                     channels=kinds,
                     channel_window=args.channel_window,
                     channel_width=args.channel_width,
+                    full_range=not args.single_window,
                 )
                 print()
                 print_condition_levels(report)
@@ -196,6 +203,7 @@ def main(argv: list[str] | None = None) -> int:
                 channels=kinds,
                 channel_window=args.channel_window,
                 channel_width=args.channel_width,
+                full_range=not args.single_window,
             )
             if args.json:
                 _emit_json(report)

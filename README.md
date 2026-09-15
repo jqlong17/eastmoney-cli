@@ -38,6 +38,8 @@ emquote kline 603606.SH -i 1d --days 30
 # 画图：上价格下成交量；可叠加多种通道（reg / donchian / hl）
 # 短线窗口可收窄到约 1～2 日（5 分钟约 48/96 根）
 emquote plot 603606.SH -i 5m --days 10 --channel reg,donchian --channel-window 96 -o out.png
+# 默认按窗口自动切成多段覆盖全时段，并把条件单买/卖/止损画在图上
+# 若只要最近一段：加 --single-window
 
 # 条件单参考价：打印买入/卖出/止损触价，便于抄到东方财富条件单（不下单）
 emquote levels 603606.SH -i 5m --days 10 --channel reg,donchian --channel-window 96

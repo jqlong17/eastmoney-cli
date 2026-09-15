@@ -1,6 +1,6 @@
 """把 K 线画成「上价格 / 下成交量」图（PNG）。
 
-支持叠加多种通道，并可标注条件单参考价水平线。
+支持全时段自动分段通道，并标注条件单买入/卖出/止损参考价。
 """
 
 from __future__ import annotations
@@ -8,7 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from .levels import compute_channel, parse_channels
+from .levels import compute_channel, parse_channels, suggest_condition_orders
 
 
 def _setup_chinese_font() -> None:
@@ -58,6 +58,59 @@ def _volume_colors(bars: list[dict[str, Any]]) -> list[str]:
     return [up if float(b["close"]) >= float(b["open"]) else down for b in bars]
 
 
+def _draw_segments(ax: Any, xs: list[int], segments: list[dict[str, Any]], *, kind: str) -> str:
+    """画出某一通道类型的全部分段；图例只标一次。"""
+    if not segments:
+        return ""
+    color = segments[0]["color"]
+    label = segments[0]["label"].split("#")[0]
+    labeled = False
+    for seg in segments:
+        start = int(seg["start"])
+        end = int(seg["end"])
+        seg_x = xs[start:end]
+        mid = seg["mid"]
+        upper = seg["upper"]
+        lower = seg["lower"]
+        legend = None if labeled else f"{label}"
+        ax.plot(seg_x, mid, color=color, linewidth=1.0, linestyle="--", label=(f"{legend}中轴" if legend else None), zorder=3)
+        ax.plot(seg_x, upper, color=color, linewidth=1.0, label=(f"{legend}上轨" if legend else None), zorder=3)
+        ax.plot(seg_x, lower, color=color, linewidth=1.0, label=(f"{legend}下轨" if legend else None), zorder=3)
+        ax.fill_between(seg_x, lower, upper, color=color, alpha=0.05, zorder=2)
+        # 分段边界细竖线，便于看出自动切分
+        if start > 0:
+            ax.axvline(start, color=color, linewidth=0.6, alpha=0.25, linestyle=":")
+        labeled = True
+    return f"{label}×{len(segments)}段"
+
+
+def _draw_condition_levels(ax: Any, suggestion: dict[str, Any], x_right: int) -> None:
+    """把条件单买/卖/止损价画成醒目水平线。"""
+    buy_p = float(suggestion["buy_price"])
+    sell_p = float(suggestion["sell_price"])
+    stop_p = float(suggestion["stop_price"])
+    styles = [
+        (buy_p, "#d62828", "条件单买入", 2.0),
+        (sell_p, "#2a9d8f", "条件单卖出", 2.0),
+        (stop_p, "#6c757d", "止损参考", 1.4),
+    ]
+    for price, color, name, lw in styles:
+        ax.axhline(price, color=color, linewidth=lw, alpha=0.95, linestyle="-.", zorder=6)
+        ax.annotate(
+            f"{name} {price:.2f}",
+            xy=(x_right, price),
+            xytext=(-6, 0),
+            textcoords="offset points",
+            ha="right",
+            va="center",
+            fontsize=8,
+            color=color,
+            fontweight="bold",
+            bbox={"boxstyle": "round,pad=0.2", "facecolor": "white", "edgecolor": color, "alpha": 0.85},
+            zorder=7,
+        )
+
+
 def plot_close_curve(
     kline: dict[str, Any],
     output: str | Path,
@@ -66,6 +119,7 @@ def plot_close_curve(
     channel_window: int = 0,
     channel_width: float = 2.0,
     show_levels: bool = True,
+    full_range: bool = True,
 ) -> Path:
     try:
         import matplotlib
@@ -88,7 +142,7 @@ def plot_close_curve(
     vol_colors = _volume_colors(bars)
     intraday = any(" " in t for t in labels)
     kinds = parse_channels(channel)
-    channel_labels: list[str] = []
+    title_bits: list[str] = []
 
     out = Path(output).expanduser().resolve()
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -96,61 +150,59 @@ def plot_close_curve(
     fig, (ax_price, ax_vol) = plt.subplots(
         2,
         1,
-        figsize=(11, 6.4),
+        figsize=(12, 6.8),
         dpi=140,
         sharex=True,
-        gridspec_kw={"height_ratios": [3, 1], "hspace": 0.06},
+        gridspec_kw={"height_ratios": [3.2, 1], "hspace": 0.06},
         layout="constrained",
     )
 
-    ax_price.plot(xs, closes, color="#c43c3c", linewidth=1.2, label="收盘价", zorder=5)
-    ax_price.fill_between(xs, closes, min(closes), color="#c43c3c", alpha=0.05, zorder=1)
+    ax_price.plot(xs, closes, color="#c43c3c", linewidth=1.15, label="收盘价", zorder=5)
+    ax_price.fill_between(xs, closes, min(closes), color="#c43c3c", alpha=0.04, zorder=1)
 
+    primary_suggestion = None
     for kind in kinds:
         if kind == "none":
             continue
-        ch = compute_channel(bars, kind=kind, window=channel_window, width=channel_width)
-        start = int(ch["start"])
-        seg_x = xs[start:]
-        color = ch["color"]
-        mid = ch["mid"][start:]
-        upper = ch["upper"][start:]
-        lower = ch["lower"][start:]
-        ax_price.plot(seg_x, mid, color=color, linewidth=1.0, linestyle="--", label=f"{ch['label']}中轴", zorder=3)
-        ax_price.plot(seg_x, upper, color=color, linewidth=1.0, label=f"{ch['label']}上轨", zorder=3)
-        ax_price.plot(seg_x, lower, color=color, linewidth=1.0, label=f"{ch['label']}下轨", zorder=3)
-        ax_price.fill_between(seg_x, lower, upper, color=color, alpha=0.06, zorder=2)
-        channel_labels.append(str(ch["label"]))
+        packed = compute_channel(
+            bars,
+            kind=kind,
+            window=channel_window,
+            width=channel_width,
+            interval=str(kline.get("interval") or "5m"),
+            full_range=full_range,
+        )
+        segments = packed.get("segments") or [packed]
+        bit = _draw_segments(ax_price, xs, segments, kind=kind)
+        if bit:
+            title_bits.append(bit)
 
-        if show_levels:
-            ax_price.axhline(ch["last_lower"], color=color, linewidth=0.8, alpha=0.7, linestyle=":")
-            ax_price.axhline(ch["last_upper"], color=color, linewidth=0.8, alpha=0.7, linestyle=":")
-            ax_price.annotate(
-                f"买参 {ch['last_lower']:.2f}",
-                xy=(xs[-1], ch["last_lower"]),
-                xytext=(-8, -10),
-                textcoords="offset points",
-                ha="right",
-                fontsize=7,
-                color=color,
-            )
-            ax_price.annotate(
-                f"卖参 {ch['last_upper']:.2f}",
-                xy=(xs[-1], ch["last_upper"]),
-                xytext=(-8, 6),
-                textcoords="offset points",
-                ha="right",
-                fontsize=7,
-                color=color,
-            )
+    if show_levels and kinds != ["none"]:
+        report = suggest_condition_orders(
+            kline,
+            channels=[k for k in kinds if k != "none"],
+            channel_window=channel_window,
+            channel_width=channel_width,
+            full_range=full_range,
+        )
+        # 图上优先标注第一种通道的条件单价，避免多组水平线打架。
+        if report.get("suggestions"):
+            primary_suggestion = report["suggestions"][0]
+            _draw_condition_levels(ax_price, primary_suggestion, xs[-1])
 
     title = (
         f"{kline.get('name') or ''} {kline.get('symbol') or ''}  "
         f"{kline.get('interval') or ''} 价格/成交量（仅交易时段）"
     ).strip()
-    if channel_labels:
-        title = f"{title}  ·  {' + '.join(channel_labels)}"
-    ax_price.set_title(title)
+    if title_bits:
+        title = f"{title}  ·  {' + '.join(title_bits)}"
+    if primary_suggestion:
+        title = (
+            f"{title}\n条件单参考  买 {primary_suggestion['buy_price']:.2f}  /  "
+            f"卖 {primary_suggestion['sell_price']:.2f}  /  "
+            f"止损 {primary_suggestion['stop_price']:.2f}"
+        )
+    ax_price.set_title(title, fontsize=11)
     ax_price.set_ylabel("价格")
     ax_price.grid(True, alpha=0.25)
     ax_price.tick_params(labelbottom=False)
