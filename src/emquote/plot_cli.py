@@ -4,6 +4,7 @@
 - emplot-channel：价格通道（回归 + Donchian）+ 条件单价
 - emplot-pv：价量通道（价量加权回归 + Donchian）+ 条件单价 + 触轨放量
 - emplot-width：通道宽度 / 确定性（相对宽度%）+ 条件单合理性评估
+- emplot-ke：价量动能（½mv²）+ 推进/耗散评估
 
 分析图：
 - emplot-kline：蜡烛 K 线 + MA
@@ -23,7 +24,7 @@ from typing import Any
 
 from .client import EastMoneyClient, QuoteError
 from .levels import parse_channels, suggest_condition_orders
-from .plotting import plot_channel_width, plot_close_curve, print_condition_levels
+from .plotting import plot_channel_width, plot_close_curve, plot_kinetic_energy, print_condition_levels
 
 # 与 README 示例图一致的预设
 PRESETS: dict[str, dict[str, Any]] = {
@@ -51,6 +52,14 @@ PRESETS: dict[str, dict[str, Any]] = {
         "default_output": "emquote-width.png",
         "help": "相对宽度%体现波动/分歧；窄=确定性偏高，宽=不确定性偏高；辅助评估条件单",
     },
+    "ke": {
+        "title": "价量动能图",
+        "channel": "vwreg",
+        "channel_window": 96,
+        "channel_width": 2.0,
+        "default_output": "emquote-ke.png",
+        "help": "物理隐喻：质量≈相对成交量，速度≈涨跌，KE≈½mv²；看推进/耗散以评估条件单",
+    },
 }
 
 
@@ -69,6 +78,7 @@ def _build_parser(preset: str) -> argparse.ArgumentParser:
         "channel": "emplot-channel",
         "pv": "emplot-pv",
         "width": "emplot-width",
+        "ke": "emplot-ke",
     }[preset]
     p = argparse.ArgumentParser(
         prog=prog,
@@ -149,6 +159,16 @@ def _run_plot(preset: str, argv: list[str] | None = None) -> int:
                 show_levels=not args.no_levels,
                 full_range=not args.single_window,
             )
+        elif preset == "ke":
+            path = plot_kinetic_energy(
+                k,
+                out,
+                channel=channel,
+                channel_window=args.channel_window,
+                channel_width=args.channel_width,
+                show_levels=not args.no_levels,
+                full_range=not args.single_window,
+            )
         else:
             path = plot_close_curve(
                 k,
@@ -160,6 +180,7 @@ def _run_plot(preset: str, argv: list[str] | None = None) -> int:
                 full_range=not args.single_window,
             )
         report = None
+        energy = None
         if kinds != ["none"]:
             report = suggest_condition_orders(
                 k,
@@ -168,6 +189,10 @@ def _run_plot(preset: str, argv: list[str] | None = None) -> int:
                 channel_width=args.channel_width,
                 full_range=not args.single_window,
             )
+        if preset == "ke":
+            from .energy import compute_kinetic_energy
+
+            energy = compute_kinetic_energy(k.get("bars") or [])
 
         if args.json:
             payload = {
@@ -181,6 +206,17 @@ def _run_plot(preset: str, argv: list[str] | None = None) -> int:
                 "bars": len(k.get("bars") or []),
                 "levels": report,
                 "width_assessment": (report or {}).get("width_assessment"),
+                "energy": {
+                    "last_ke": energy.get("last_ke"),
+                    "last_mass": energy.get("last_mass"),
+                    "last_velocity": energy.get("last_velocity"),
+                    "assessment": energy.get("assessment"),
+                    "p33": energy.get("p33"),
+                    "p50": energy.get("p50"),
+                    "p66": energy.get("p66"),
+                }
+                if energy
+                else None,
             }
             print(json.dumps(payload, ensure_ascii=False, indent=2))
         else:
@@ -189,6 +225,14 @@ def _run_plot(preset: str, argv: list[str] | None = None) -> int:
                 f"{k.get('name')} {k.get('symbol')}  {k.get('interval')}  "
                 f"bars={len(k['bars'])}  channel={channel}"
             )
+            if energy:
+                a = energy.get("assessment") or {}
+                print(
+                    f"动能: KE={energy.get('last_ke')}  {a.get('label')}  "
+                    f"可操作性={a.get('operability_score')}  ·  {a.get('reasonableness')}"
+                )
+                if a.get("plan_hint"):
+                    print(f"  → {a.get('plan_hint')}")
             if report:
                 print()
                 print_condition_levels(report)
@@ -211,6 +255,11 @@ def main_pv(argv: list[str] | None = None) -> int:
 def main_width(argv: list[str] | None = None) -> int:
     """emplot-width 入口。"""
     return _run_plot("width", argv)
+
+
+def main_ke(argv: list[str] | None = None) -> int:
+    """emplot-ke 入口。"""
+    return _run_plot("ke", argv)
 
 
 if __name__ == "__main__":

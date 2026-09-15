@@ -73,6 +73,24 @@ def caption_for_width(assessment: dict[str, Any] | None = None) -> list[str]:
     return lines
 
 
+def caption_for_ke(assessment: dict[str, Any] | None = None) -> list[str]:
+    assessment = assessment or {}
+    lines = [
+        "这是物理学隐喻图：质量≈相对成交量，速度≈涨跌幅，动能 KE≈½mv²（研究用，不是物理定律）。",
+        "下半图柱高=动能大小；红柱偏上攻推进，绿柱偏下破推进；虚线是本段动能中位数。",
+        "动能偏高：有量参与的真推进（突破/续跌叙事更强）；动能耗散：价格易空转，更适合等回踩或收敛。",
+        "冲量从高位回落时，常是回踩类条件单更好的窗口；极端单边高动能时不宜抢反方向单。",
+    ]
+    if assessment.get("plan_hint"):
+        lines.append(f"本次评估：{assessment.get('label')} —— {assessment['plan_hint']}")
+    elif assessment.get("label"):
+        lines.append(
+            f"本次评估：{assessment.get('label')}（{assessment.get('reasonableness') or '可参考'}）。"
+        )
+    lines.append("横轴只保留交易时段；工具不下单，价位需人工录入东方财富条件单。")
+    return lines
+
+
 def apply_caption(fig: Any, lines: list[str], *, title: str = "读图说明") -> None:
     """在图底部画通俗说明；会略微加高画布并留出页脚空间。"""
     if not lines:

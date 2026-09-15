@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""上班族波段条件单：报价 + 主图四件套 + 标准化 plan。
+"""上班族波段条件单：报价 + 主图五件套 + 标准化 plan。
 
-默认主图：日线 / 5m K 线 / 价量通道 / 通道宽度。
+默认主图：日线 / 5m K 线 / 价量通道 / 通道宽度 / 动能。
 分时为可选辅图（--with-intraday），不作设单主依据。
 """
 
@@ -48,7 +48,7 @@ def _run_json(cmd: list[str]) -> dict:
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(
-        description="波段条件单简报：报价 + 日线/K线/价量通道/宽度 + plan（分时可选）"
+        description="波段条件单简报：报价 + 日线/K线/价量通道/宽度/动能 + plan（分时可选）"
     )
     p.add_argument("symbol", help="如 603606.SH")
     p.add_argument("-o", "--outdir", default=None, help="输出目录，默认 /tmp/swing-<code>")
@@ -74,6 +74,7 @@ def main(argv: list[str] | None = None) -> int:
         "kline": _which("emplot-kline"),
         "pv": _which("emplot-pv"),
         "width": _which("emplot-width"),
+        "ke": _which("emplot-ke"),
         "intraday": _which("emplot-intraday"),
     }
 
@@ -128,6 +129,7 @@ def main(argv: list[str] | None = None) -> int:
     chart("kline", tools["kline"], f"{code}-kline.png")
     chart("pv", tools["pv"], f"{code}-pv.png")
     chart("width", tools["width"], f"{code}-width.png")
+    chart("ke", tools["ke"], f"{code}-ke.png")
     if args.with_intraday:
         chart("intraday", tools["intraday"], f"{code}-intraday.png")
 

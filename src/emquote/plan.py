@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from .energy import compute_kinetic_energy
 from .levels import round_price, suggest_condition_orders
 
 
@@ -125,6 +126,11 @@ def build_condition_plan(
     if width_assessment.get("plan_hint"):
         how_to.insert(3, f"宽度评估：{width_assessment['plan_hint']}")
 
+    energy_pack = compute_kinetic_energy(kline.get("bars") or [])
+    energy_assess = energy_pack.get("assessment") or {}
+    if energy_assess.get("plan_hint"):
+        how_to.insert(4, f"动能评估：{energy_assess['plan_hint']}")
+
     return {
         "symbol": report.get("symbol") or kline.get("symbol") or "",
         "code": report.get("code") or kline.get("code") or "",
@@ -170,9 +176,21 @@ def build_condition_plan(
             "plan_hint": width_assessment.get("plan_hint"),
             "channels": width_assessment.get("channels") or [],
         },
+        "energy": {
+            "rank": energy_assess.get("rank"),
+            "label": energy_assess.get("label"),
+            "reasonableness": energy_assess.get("reasonableness"),
+            "operability_score": energy_assess.get("operability_score"),
+            "plan_hint": energy_assess.get("plan_hint"),
+            "last_ke": energy_pack.get("last_ke"),
+            "last_mass": energy_pack.get("last_mass"),
+            "last_velocity": energy_pack.get("last_velocity"),
+            "decaying": energy_assess.get("decaying"),
+            "note": energy_assess.get("note"),
+        },
         "invalidation": invalidation,
         "how_to_use": how_to,
-        "charts_recommended": ["daily", "kline", "pv", "width"],
+        "charts_recommended": ["daily", "kline", "pv", "width", "ke"],
         "charts_optional": ["intraday"],
         "levels_report": report,
         "disclaimer": report.get("disclaimer")
@@ -225,6 +243,18 @@ def print_condition_plan(plan: dict[str, Any]) -> None:
         )
         if w.get("plan_hint"):
             print(f"  提示: {w.get('plan_hint')}")
+    e = plan.get("energy") or {}
+    if e:
+        print()
+        print("【价量动能 ½mv²】")
+        print(
+            f"  状态: {e.get('label')}  合理性: {e.get('reasonableness')}  "
+            f"可操作性: {e.get('operability_score')}  "
+            f"KE: {e.get('last_ke')}  m={e.get('last_mass')}  "
+            f"v={float(e.get('last_velocity') or 0)*100:.3f}%"
+        )
+        if e.get("plan_hint"):
+            print(f"  提示: {e.get('plan_hint')}")
     print()
     print("【失效条件】")
     for item in plan.get("invalidation") or []:

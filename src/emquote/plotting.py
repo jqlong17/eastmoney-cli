@@ -506,3 +506,146 @@ def plot_channel_width(
     fig.savefig(out)
     plt.close(fig)
     return out
+
+
+def plot_kinetic_energy(
+    kline: dict[str, Any],
+    output: str | Path,
+    *,
+    channel: str = "vwreg",
+    channel_window: int = 96,
+    channel_width: float = 2.0,
+    show_levels: bool = True,
+    full_range: bool = True,
+    vol_ma: int = 20,
+    vel_smooth: int = 3,
+) -> Path:
+    """动能图：上价格(+可选通道/条件单)，下签名动能柱。"""
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError as exc:  # pragma: no cover
+        raise RuntimeError("画图需要安装 matplotlib：pip install 'emquote[plot]'") from exc
+
+    from .captions import caption_for_ke
+    from .energy import compute_kinetic_energy
+
+    _setup_chinese_font()
+
+    bars = kline.get("bars") or []
+    if not bars:
+        raise RuntimeError("没有可绘制的 K 线数据")
+
+    xs = list(range(len(bars)))
+    closes = [float(b["close"]) for b in bars]
+    labels = [str(b["time"]) for b in bars]
+    intraday = any(" " in t for t in labels)
+    kinds = [k for k in parse_channels(channel) if k != "none"]
+
+    energy = compute_kinetic_energy(bars, vol_ma=vol_ma, vel_smooth=vel_smooth)
+    assessment = energy.get("assessment") or {}
+    signed = energy["signed_ke"]
+    ke_abs = energy["ke"]
+
+    out = Path(output).expanduser().resolve()
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    fig, (ax_price, ax_ke) = plt.subplots(
+        2,
+        1,
+        figsize=(12, 7.2),
+        dpi=140,
+        sharex=True,
+        gridspec_kw={"height_ratios": [2.6, 1.4], "hspace": 0.08},
+        layout="constrained",
+    )
+
+    ax_price.plot(xs, closes, color="#c43c3c", linewidth=1.15, label="收盘价", zorder=5)
+    title_bits: list[str] = []
+    for kind in kinds:
+        packed = compute_channel(
+            bars,
+            kind=kind,
+            window=channel_window,
+            width=channel_width,
+            interval=str(kline.get("interval") or "5m"),
+            full_range=full_range,
+        )
+        segments = packed.get("segments") or [packed]
+        bit = _draw_segments(ax_price, xs, segments, kind=kind)
+        if bit:
+            title_bits.append(bit)
+
+    primary_suggestion = None
+    if show_levels and kinds:
+        report = suggest_condition_orders(
+            kline,
+            channels=kinds,
+            channel_window=channel_window,
+            channel_width=channel_width,
+            full_range=full_range,
+        )
+        if report.get("suggestions"):
+            primary_suggestion = report["suggestions"][0]
+            _draw_condition_levels(ax_price, primary_suggestion, xs[-1])
+
+    colors = ["#c43c3c" if v >= 0 else "#2e8b57" for v in signed]
+    bar_w = 0.8 if len(xs) < 200 else 1.0
+    ax_ke.bar(xs, signed, width=bar_w, color=colors, align="center", alpha=0.85, zorder=3, label="签名动能")
+    ax_ke.axhline(0, color="#212529", linewidth=0.8, alpha=0.7, zorder=2)
+    p50 = float(energy.get("p50") or 0)
+    p66 = float(energy.get("p66") or 0)
+    if p50 > 0:
+        ax_ke.axhline(p50, color="#6c757d", linewidth=1.0, linestyle="--", alpha=0.9, label=f"KE中位 {p50:.2f}")
+        ax_ke.axhline(-p50, color="#6c757d", linewidth=1.0, linestyle="--", alpha=0.5)
+    if p66 > 0:
+        ax_ke.axhline(p66, color="#e76f51", linewidth=0.9, linestyle=":", alpha=0.85, label=f"高动能 {p66:.2f}")
+        ax_ke.axhline(-p66, color="#e76f51", linewidth=0.9, linestyle=":", alpha=0.5)
+
+    label = assessment.get("label") or ""
+    hint = assessment.get("reasonableness") or ""
+    title = (
+        f"{kline.get('name') or ''} {kline.get('symbol') or ''}  "
+        f"{kline.get('interval') or ''} 价量动能（½mv²）"
+    ).strip()
+    if title_bits:
+        title = f"{title}  ·  {' + '.join(title_bits)}"
+    title = (
+        f"{title}\n"
+        f"KE {energy['last_ke']:.2f}  ·  {label}  ·  "
+        f"可操作性 {assessment.get('operability_score')}  ·  {hint}"
+        f"  ·  m={energy['last_mass']:.2f}  v={energy['last_velocity']*100:.3f}%"
+    )
+    if primary_suggestion:
+        title = (
+            f"{title}\n条件单参考  买 {primary_suggestion['buy_price']:.2f}  /  "
+            f"卖 {primary_suggestion['sell_price']:.2f}  /  "
+            f"止损 {primary_suggestion['stop_price']:.2f}"
+        )
+    ax_price.set_title(title, fontsize=11)
+    ax_price.set_ylabel("价格")
+    ax_price.grid(True, alpha=0.25)
+    ax_price.tick_params(labelbottom=False)
+    ax_price.legend(loc="upper left", fontsize=7, framealpha=0.85, ncol=2)
+
+    ax_ke.set_ylabel("签名动能")
+    ax_ke.grid(True, alpha=0.25)
+    ax_ke.legend(loc="upper left", fontsize=7, framealpha=0.85, ncol=2)
+    ax_ke.set_xlim(0, max(len(xs) - 1, 0))
+    peak = max(ke_abs) if ke_abs else 1.0
+    ax_ke.set_ylim(-max(peak * 1.15, 0.5), max(peak * 1.15, 0.5))
+
+    tick_idxs = _pick_tick_indices(len(xs), target=8)
+    ax_ke.set_xticks(tick_idxs)
+    ax_ke.set_xticklabels(
+        [_label_for_bar(labels[i], intraday=intraday) for i in tick_idxs],
+        rotation=30,
+        ha="right",
+    )
+
+    apply_caption(fig, caption_for_ke(assessment), title="读图说明（价量动能）")
+    fig.savefig(out)
+    plt.close(fig)
+    return out
