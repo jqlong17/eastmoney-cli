@@ -60,7 +60,7 @@ emquote plot --from-json examples/sample-603606-5m.json --days 10 -o demo.png
 |---|---|---|
 | `quote` 实时快照 | ✅ | 代码、名称、最新价、时间 |
 | `kline` 多周期 | ✅ | 含「最近 N 日 × 5 分钟」 |
-| `plot` 曲线图 | ✅ | 收盘价 PNG，方便肉眼看 |
+| `plot` 价格/成交量图 | ✅ | 上价格、下成交量 PNG |
 | JSON / CSV | ✅ | 方便接 pandas / 其它脚本 |
 | 多主机 + 重试 | ✅ | `push2` / `push2delay` / `push2his*` |
 | `pip install` 入口 | ✅ | 控制台命令 `emquote` |

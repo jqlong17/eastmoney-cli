@@ -1,4 +1,4 @@
-"""把 K 线收盘价画成简单曲线图（PNG）。
+"""把 K 线画成「上价格 / 下成交量」图（PNG）。
 
 分钟级数据按「交易 bar 序号」横轴绘制，跳过隔夜/周末等非交易时段，
 避免休市空洞被连成斜线。
@@ -53,6 +53,16 @@ def _pick_tick_indices(n: int, target: int = 8) -> list[int]:
     return idxs
 
 
+def _volume_colors(bars: list[dict[str, Any]]) -> list[str]:
+    """涨红跌绿（A 股习惯）。"""
+    up, down = "#c43c3c", "#2e8b57"
+    colors: list[str] = []
+    for b in bars:
+        o, c = float(b["open"]), float(b["close"])
+        colors.append(up if c >= o else down)
+    return colors
+
+
 def plot_close_curve(kline: dict[str, Any], output: str | Path) -> Path:
     try:
         import matplotlib
@@ -71,34 +81,50 @@ def plot_close_curve(kline: dict[str, Any], output: str | Path) -> Path:
     # 只用交易时段 bar，按序号等距排列，不按日历时间轴留空。
     xs = list(range(len(bars)))
     closes = [float(b["close"]) for b in bars]
+    volumes = [float(b.get("volume") or 0) for b in bars]
     labels = [str(b["time"]) for b in bars]
+    vol_colors = _volume_colors(bars)
     intraday = any(" " in t for t in labels)
 
     out = Path(output).expanduser().resolve()
     out.parent.mkdir(parents=True, exist_ok=True)
 
-    fig, ax = plt.subplots(figsize=(11, 4.8), dpi=140)
-    ax.plot(xs, closes, color="#c43c3c", linewidth=1.2)
-    ax.fill_between(xs, closes, min(closes), color="#c43c3c", alpha=0.08)
+    fig, (ax_price, ax_vol) = plt.subplots(
+        2,
+        1,
+        figsize=(11, 6.2),
+        dpi=140,
+        sharex=True,
+        gridspec_kw={"height_ratios": [3, 1], "hspace": 0.06},
+        layout="constrained",
+    )
 
+    ax_price.plot(xs, closes, color="#c43c3c", linewidth=1.2)
+    ax_price.fill_between(xs, closes, min(closes), color="#c43c3c", alpha=0.08)
     title = (
         f"{kline.get('name') or ''} {kline.get('symbol') or ''}  "
-        f"{kline.get('interval') or ''} 收盘价（仅交易时段）"
+        f"{kline.get('interval') or ''} 价格/成交量（仅交易时段）"
     ).strip()
-    ax.set_title(title)
-    ax.set_ylabel("价格")
-    ax.grid(True, alpha=0.25)
+    ax_price.set_title(title)
+    ax_price.set_ylabel("价格")
+    ax_price.grid(True, alpha=0.25)
+    ax_price.tick_params(labelbottom=False)
+
+    # 成交量柱略窄，避免根数多时糊成一片。
+    width = 0.8 if len(xs) < 200 else 1.0
+    ax_vol.bar(xs, volumes, width=width, color=vol_colors, align="center")
+    ax_vol.set_ylabel("成交量")
+    ax_vol.grid(True, axis="y", alpha=0.25)
+    ax_vol.set_xlim(0, max(len(xs) - 1, 0))
 
     tick_idxs = _pick_tick_indices(len(xs), target=8)
-    ax.set_xticks(tick_idxs)
-    ax.set_xticklabels(
+    ax_vol.set_xticks(tick_idxs)
+    ax_vol.set_xticklabels(
         [_label_for_bar(labels[i], intraday=intraday) for i in tick_idxs],
         rotation=30,
         ha="right",
     )
-    ax.set_xlim(0, max(len(xs) - 1, 0))
 
-    fig.tight_layout()
     fig.savefig(out)
     plt.close(fig)
     return out
