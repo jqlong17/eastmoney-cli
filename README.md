@@ -6,8 +6,6 @@
 - **非官方**，无 SLA；节点可能限流或短暂断连。
 - **不是** Choice / OpenAPI（官方量化接口需付费终端：[quantapi.eastmoney.com](https://quantapi.eastmoney.com/)）。
 
-与 `~/projects/stock` 等交易/研究仓库完全解耦，适合单独开 GitHub 仓库。
-
 ## 安装
 
 ```bash
