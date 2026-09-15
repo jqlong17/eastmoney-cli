@@ -92,17 +92,19 @@ def compute_kinetic_energy(
         signed_ke.append(energy_bp2 if v >= 0 else -energy_bp2)
         momentum.append(m * v * 1e4)  # 动量（相对量×收益×1e4）
 
-    valid = sorted(k for k in ke if k >= 0)
+    # 因果分位：阈值只用当前点之前，避免同窗自证
+    hist = ke[:-1] if len(ke) > 8 else ke
+    valid = sorted(k for k in hist if k >= 0)
     last_ke = ke[-1]
     last_v = velocity[-1]
     last_m = mass[-1]
     last_signed = signed_ke[-1]
-    p33 = _percentile(valid, 0.33)
-    p50 = _percentile(valid, 0.50)
-    p66 = _percentile(valid, 0.66)
-    p90 = _percentile(valid, 0.90)
+    p33 = _percentile(valid, 0.33) if valid else 0.0
+    p50 = _percentile(valid, 0.50) if valid else 0.0
+    p66 = _percentile(valid, 0.66) if valid else 0.0
+    p90 = _percentile(valid, 0.90) if valid else 0.0
 
-    # 近端衰减：最近动能相对前一段均值
+    # 近端衰减：最近动能相对前一段均值（不含未来）
     tail = max(5, n // 20)
     prev = ke[max(0, n - 2 * tail) : max(1, n - tail)] or ke[: max(1, n // 2)]
     prev_mean = sum(prev) / len(prev) if prev else last_ke
@@ -111,41 +113,33 @@ def compute_kinetic_energy(
     if last_ke >= p66 and abs(last_v) > 0:
         if last_v > 0:
             rank, label = "thrust_up", "上攻推进"
-            note = "动能偏高且向上：有量参与的上攻；条件单偏突破/持有叙事，回踩单需等动能回落。"
-            plan_hint = "推进偏多：突破类条件单更顺；回踩买入宜等动能衰减后再挂。"
+            note = "动能相对历史偏高且向上（描述性隐喻，未验证 alpha）。"
+            plan_hint = "状态偏趋势上攻：突破叙事强于回踩；仍以回放校准为准。"
         else:
             rank, label = "thrust_down", "下破推进"
-            note = "动能偏高且向下：有量参与的下跌；防守优先，不宜抢反弹条件单。"
-            plan_hint = "推进偏空：优先止损/观望，勿因下轨便宜就挂激进买单。"
-        reasonableness = "看方向（强动能）"
+            note = "动能相对历史偏高且向下（描述性）。"
+            plan_hint = "状态偏下跌推进：防守优先，不宜仅因下轨便宜挂买单。"
+        reasonableness = "强动能状态（描述性）"
     elif last_ke <= p33:
-        if decaying or last_ke <= p33:
-            rank, label = "dissipated", "动能耗散"
-            note = "动能偏低：推进力弱，价格易在通道内空转；更适合等回踩/收敛后再挂单。"
-            plan_hint = "动能耗散：通道内噪声相对大，条件单宜配合窄宽度或更清晰的日线方向。"
-            reasonableness = "宜等结构（低动能）"
-        else:
-            rank, label = "quiet", "动能平静"
-            note = "动能安静。"
-            plan_hint = "动能平静，按通道轨位与宽度评估即可。"
-            reasonableness = "可参考"
+        rank, label = "dissipated", "动能耗散"
+        note = "动能相对历史偏低（描述性）。"
+        plan_hint = "动能耗散：更适合等结构/收敛；结合宽度与校准。"
+        reasonableness = "低动能状态（描述性）"
     else:
         if decaying:
             rank, label = "cooling", "冲量回落"
-            note = "动能从高位回落：冲量衰减，若靠近下轨可观察回踩；若刚破位则防续跌失败反抽。"
-            plan_hint = "冲量回落：回踩类条件单窗口更好；假突破后也更常见。"
-            reasonableness = "回踩窗口偏好"
+            note = "动能从近端高位回落（描述性）。"
+            plan_hint = "冲量回落：回踩类 setup 的叙事窗口；需校准确认。"
+            reasonableness = "回落状态（描述性）"
         else:
             rank, label = "neutral", "动能中性"
-            note = "动能处于中位，需结合通道宽度与日线方向。"
-            plan_hint = "动能中性：以价量通道轨位 + 宽度确定性为主。"
-            reasonableness = "可参考"
+            note = "动能处于历史中位附近（描述性）。"
+            plan_hint = "动能中性：以通道轨位 + 回放校准为主。"
+            reasonableness = "中性（描述性）"
 
-    # 分数：适度动能（非极端空转、非疯狂单向）略高；这里给「可操作性」分
     below = sum(1 for v in valid if v < last_ke)
     equal = sum(1 for v in valid if v == last_ke)
     rank_frac = (below + 0.5 * equal) / max(len(valid), 1)
-    # 可操作性：耗散且非单边崩盘时偏高；极端高动能略降（难挂回踩）
     if rank in {"dissipated", "cooling", "quiet"}:
         operability = round(min(100.0, 55 + (1 - rank_frac) * 40), 1)
     elif rank in {"thrust_up", "thrust_down"}:
@@ -176,8 +170,10 @@ def compute_kinetic_energy(
             "label": label,
             "reasonableness": reasonableness,
             "operability_score": operability,
+            "operability_note": "启发式可操作性，非期望收益",
             "plan_hint": plan_hint,
             "note": note,
             "decaying": decaying,
+            "causal": True,
         },
     }

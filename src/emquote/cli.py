@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from .calibrate import calibrate_multi
 from .client import EastMoneyClient, QuoteError
 from .levels import parse_channels, suggest_condition_orders
 from .plan import build_condition_plan, print_condition_plan
@@ -77,7 +78,7 @@ def _add_kline_fetch_args(sp: argparse.ArgumentParser) -> None:
     sp.add_argument("-i", "--interval", default="5m", help="周期，默认 5m")
     sp.add_argument("--days", type=int, default=10, help="最近 N 个交易日，默认 10")
     sp.add_argument("--bars", type=int, default=None, help="只保留最近 N 根")
-    sp.add_argument("--adjust", choices=["none", "qfq", "hfq"], default="none", help="复权")
+    sp.add_argument("--adjust", choices=["none", "qfq", "hfq"], default="qfq", help="复权，默认 qfq（波段研究）")
     sp.add_argument("--from-json", dest="from_json", help="离线读取东财原始 JSON")
     sp.add_argument(
         "--refresh",
@@ -202,11 +203,25 @@ def build_parser() -> argparse.ArgumentParser:
 
     ppn = sub.add_parser(
         "plan",
-        help="输出标准化波段条件单方案：买入区/止盈/止损/有效期/失效条件（不下单）",
+        help="输出标准化波段条件单方案：买入区/止盈/止损/有效期/失效条件/历史校准（不下单）",
     )
     _add_kline_fetch_args(ppn)
     _add_channel_args(ppn, default="vwreg,donchian")
     ppn.add_argument("--json", action="store_true", help="输出 JSON")
+    ppn.add_argument(
+        "--no-calibrate",
+        action="store_true",
+        help="跳过 walk-forward 历史校准（更快，但不输出命中后验）",
+    )
+
+    pc = sub.add_parser(
+        "calibrate",
+        help="条件单 walk-forward 历史校准：触达/先止盈/先止损后验（研究用）",
+    )
+    _add_kline_fetch_args(pc)
+    _add_channel_args(pc, default="vwreg,donchian")
+    pc.add_argument("--validity-days", type=int, default=5, help="有效期交易日，默认 5")
+    pc.add_argument("--json", action="store_true", help="输出 JSON")
     return p
 
 
@@ -303,12 +318,53 @@ def main(argv: list[str] | None = None) -> int:
                 channel_window=args.channel_window,
                 channel_width=args.channel_width,
                 full_range=not args.single_window,
+                run_calibration=not bool(getattr(args, "no_calibrate", False)),
             )
             if args.json:
                 # JSON 里去掉嵌套 levels 的冗余大字段可保留；便于 AI
                 _emit_json(plan)
             else:
                 print_condition_plan(plan)
+            return 0
+
+        if args.cmd == "calibrate":
+            k = _fetch_kline(client, args)
+            kinds = parse_channels(args.channel)
+            window = args.channel_window if args.channel_window > 0 else 96
+            report = calibrate_multi(
+                k,
+                kinds=[c for c in kinds if c != "none"],
+                channel_window=window,
+                channel_width=args.channel_width,
+                validity_days=int(args.validity_days),
+            )
+            if args.json:
+                _emit_json(report)
+            else:
+                print("条件单历史校准（walk-forward · 研究用）")
+                print(
+                    f"标的: {report.get('name')} {report.get('symbol')}  "
+                    f"周期: {report.get('interval')}  建议主通道: {report.get('suggested_primary')}"
+                )
+                print(report.get("note"))
+                for kind, item in (report.get("by_kind") or {}).items():
+                    print()
+                    print(f"【{kind}】")
+                    if not item.get("ok"):
+                        print(f"  跳过: {item.get('reason')}")
+                        continue
+                    rates = item.get("rates") or {}
+                    print(f"  决策点: {item.get('decisions')}  质量: {item.get('quality')}")
+                    print(
+                        f"  成交后验: {rates.get('fill', {}).get('mean')}  "
+                        f"先止盈|成交: {rates.get('tp_given_fill', {}).get('mean')}  "
+                        f"CI80={rates.get('tp_given_fill', {}).get('ci80')}  "
+                        f"先止损|成交: {rates.get('stop_given_fill', {}).get('mean')}"
+                    )
+                    print(f"  counts: {item.get('counts')}")
+                    print(f"  → {item.get('hint')}")
+                print()
+                print("声明: 单票短样本回放，不是未来胜率。")
             return 0
 
     except (QuoteError, ValueError, RuntimeError) as exc:

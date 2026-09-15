@@ -7,7 +7,7 @@
 ## Agent
 
 1. 跑 `swing_brief.py 603606.SH -o /tmp/swing-603606`（默认不出分时）
-2. 读 daily/kline/pv/width/ke，并读取 `plan`（含 `plan.width` / `plan.energy`）
-3. 按模板给出买入区/止盈/止损/有效期/失效条件；若宽度偏宽或动能单边推进要写明风险
+2. 读主图 + **`emquote plan`（含 calibration 触达后验）**；不要把宽度/动能分数当成胜率
+3. 输出买入区/止盈/止损/有效期/失效条件；若校准质量低或 stop_heavy，要写明
 
 合格回复必须包含：三句结论、条件单表格、有效期、失效条件、非投资建议声明。

@@ -84,14 +84,17 @@ emplot-ke 603606.SH -o ke.png --json
 ## 常用命令
 
 ```bash
-# 波段条件单方案（买入区/止盈/止损/有效期/失效条件）
+# 波段条件单方案（买入区/止盈/止损/有效期/失效条件 + 历史校准）
 emquote plan 603606.SH -i 5m --days 10 --channel vwreg,donchian
+emquote plan 603606.SH -i 5m --days 10 --channel vwreg,donchian --json
+# 只要回放命中后验（walk-forward）
+emquote calibrate 603606.SH -i 5m --days 10 --channel vwreg,donchian
 
 # 实时报价
 emquote quote 603606.SH
 emquote quote 002223.SZ --json
 
-# 最近 10 个交易日 · 5 分钟 K 线（成交价序列）
+# 最近 10 个交易日 · 5 分钟 K 线（成交价序列；默认前复权 qfq）
 emquote kline 603606.SH -i 5m --days 10
 emquote kline 603606.SH -i 5m --days 10 --csv > bars.csv
 emquote kline 603606.SH -i 1d --days 30
@@ -107,13 +110,15 @@ emquote levels 603606.SH -i 5m --days 10 --channel vwreg,donchian --channel-wind
 ```
 
 周期：`1m` `5m` `15m` `30m` `60m` `1d` `1w` `1mo`。  
-复权：`--adjust none|qfq|hfq`。  
+复权：`--adjust none|qfq|hfq`（**CLI 默认 `qfq`**，波段研究更稳；画图 CLI 仍可显式传 `none`）。  
 全局参数：`--timeout`、`--retries`（写在子命令前面）。
 
 离线样例（`push2his` 暂时不通时）：
 
 ```bash
 emquote kline --from-json examples/sample-603606-5m.json --days 10
+emquote plan --from-json examples/sample-603606-5m.json --days 10 --channel vwreg,donchian
+emquote calibrate --from-json examples/sample-603606-5m.json --days 10 --channel vwreg,donchian
 emquote plot --from-json examples/sample-603606-5m.json --days 10 -o demo.png
 emplot-channel --from-json examples/sample-603606-5m.json --days 10 \
   -o examples/demo-603606-5m-10d.png
@@ -151,7 +156,7 @@ K 线蜡烛（`emplot-kline`）：
 
 ![东方电缆 日线](examples/demo-603606-daily.png)
 
-分时（`emplot-intraday`）：
+分时（`emplot-intraday`，遗留辅图，条件单主路径不使用）：
 
 ![东方电缆 分时](examples/demo-603606-intraday.png)
 
@@ -161,17 +166,18 @@ K 线蜡烛（`emplot-kline`）：
 | 能力 | 状态 | 说明 |
 |---|---|---|
 | `quote` 实时快照 | ✅ | 代码、名称、最新价、时间 |
-| `kline` 多周期 | ✅ | 含「最近 N 日 × 5 分钟」 |
+| `kline` 多周期 | ✅ | 含「最近 N 日 × 5 分钟」；默认前复权 |
 | `emplot-channel` | ✅ | 价格通道图独立 CLI（AI 调用） |
 | `emplot-pv` | ✅ | 价量通道图独立 CLI（AI 调用） |
-| `emplot-width` | ✅ | 通道宽度/确定性图；窄=分歧小，辅助评估条件单 |
-| `emplot-ke` | ✅ | 价量动能图（½mv²）；推进/耗散，辅助评估条件单 |
+| `emplot-width` | ✅ | 通道宽度描述性分档（因果分位） |
+| `emplot-ke` | ✅ | 价量动能描述性状态（½mv² 隐喻） |
 | `emplot-kline` | ✅ | K 线蜡烛图独立 CLI（AI 调用） |
 | `emplot-daily` | ✅ | 日线均线趋势独立 CLI（AI 调用） |
-| `emplot-intraday` | 分时辅图（可选，非设单主依据） | 1m×最近交易日 |
+| `emplot-intraday` | 遗留 | 分时辅图；条件单主路径默认不用 |
 | `plot` 价格/成交量图 | ✅ | 上价格、下成交量；可叠加 reg/vwreg/donchian/hl |
 | `levels` 条件单参考价 | ✅ | 给出买入/卖出/止损触价，人工录入东财 |
-| `plan` 条件单方案 | ✅ | 买入区/止盈/止损 + 有效期 + 失效条件（波段设单） |
+| `plan` 条件单方案 | ✅ | 轨位 + ATR 止损间距 + 费用后 RR + walk-forward 校准 |
+| `calibrate` 历史校准 | ✅ | 触达/先止盈/先止损后验（弱先验收缩） |
 | K 线本地缓存 | ✅ | `~/.cache/emquote/kline/`，断线可回退；`--refresh` 强刷 |
 | `ashare-swing` Skill | ✅ | Cursor 中短线看盘：出图 + 条件单价 + 研究备注 |
 | JSON / CSV | ✅ | 方便接 pandas / 其它脚本 |

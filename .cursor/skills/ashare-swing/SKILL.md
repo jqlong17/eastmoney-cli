@@ -71,7 +71,7 @@ emquote plan 603606.SH -i 5m --days 10 --channel vwreg,donchian --json
 
 K 线有本地缓存（`~/.cache/emquote/kline/`）；失败会回退缓存/离线样例。强制重拉用 `--refresh`。
 
-**必须读 PNG + plan 数字**，不要只报路径。读 `plan.width`（窄=更可参考）与 `plan.energy`（推进/耗散）。
+**必须读 PNG + plan 数字**，不要只报路径。优先读 `plan.calibration`（触达/先止盈后验）；`plan.width` / `plan.energy` 只是描述性状态，不是胜率。
 
 ### 5) 输出模板（必须）
 
@@ -84,8 +84,9 @@ K 线有本地缓存（`~/.cache/emquote/kline/`）；失败会回退缓存/离�
 ### 结论
 - 方向：{偏强/震荡/偏弱}（看日线）
 - 计划：{观望 / 等回踩买入区 / 等突破} —— 一句话
-- 宽度/确定性：{窄·更可参考 / 中性 / 宽·宜谨慎}（看 width 图与 plan.width）
-- 动能：{上攻推进 / 耗散 / 冲量回落 / …}（看 ke 图与 plan.energy）
+- 宽度/确定性：{窄/中/宽 · 描述性}（非胜率）
+- 动能：{推进/耗散/… · 描述性}
+- 历史校准：成交后先触止盈后验 {p} CI80={lo,hi}；质量 {quality}
 - 关键风险：{一句话}
 
 ### 条件单方案（可抄东财）

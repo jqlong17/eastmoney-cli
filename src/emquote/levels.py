@@ -209,44 +209,61 @@ def _percentile(sorted_vals: list[float], q: float) -> float:
     return sorted_vals[lo] * (1.0 - frac) + sorted_vals[hi] * frac
 
 
-def _certainty_from_width(last_pct: float, series_pct: list[float]) -> dict[str, Any]:
-    """用当前宽度相对历史分位，给出确定性标签（研究用）。"""
-    clean = sorted(v for v in series_pct if v is not None and v >= 0)
-    if not clean:
+def _certainty_from_width(
+    last_pct: float,
+    series_pct: list[float],
+    *,
+    causal: bool = True,
+) -> dict[str, Any]:
+    """用当前宽度相对历史分位，给出描述性分档（研究用，非预测概率）。
+
+    causal=True：阈值只用「当前点之前」的样本，避免同窗自证。
+    """
+    clean_all = [float(v) for v in series_pct if v is not None and v >= 0]
+    if not clean_all:
         return {
             "label": "未知",
             "rank": "unknown",
             "certainty_score": None,
-            "note": "宽度序列为空，无法评估确定性",
+            "note": "宽度序列为空，无法评估",
+            "causal": causal,
         }
+
+    if causal and len(clean_all) >= 8:
+        hist = clean_all[:-1] if len(clean_all) > 1 else clean_all
+    else:
+        hist = clean_all
+    clean = sorted(hist)
+
     p33 = _percentile(clean, 0.33)
     p50 = _percentile(clean, 0.50)
     p66 = _percentile(clean, 0.66)
-    # 分数：越窄越高（0～100）；用相对分位反转
-    # rank_frac≈0 最窄，≈1 最宽
     below = sum(1 for v in clean if v < last_pct)
     equal = sum(1 for v in clean if v == last_pct)
     rank_frac = (below + 0.5 * equal) / len(clean)
     score = round(max(0.0, min(100.0, (1.0 - rank_frac) * 100.0)), 1)
 
     if last_pct <= p33:
-        label, rank = "窄·确定性偏高", "narrow"
-        note = "通道偏窄：近期波动/分歧相对小，条件单轨位更可参考；但仍需设止损。"
+        label, rank = "窄·相对历史偏低", "narrow"
+        note = "相对历史宽度偏窄（描述性）：轨位更清晰的叙事更强；仍非胜率。"
     elif last_pct >= p66:
-        label, rank = "宽·不确定性偏高", "wide"
-        note = "通道偏宽：波动或分歧偏大，触发带噪声更大；宜缩小仓位或拉长观察，勿被虚高盈亏比迷惑。"
+        label, rank = "宽·相对历史偏高", "wide"
+        note = "相对历史宽度偏高（描述性）：触发带噪声可能更大；勿把几何盈亏比当期望。"
     else:
-        label, rank = "中性", "neutral"
-        note = "通道宽度处于中位：条件单可挂，但需结合日线方向与放量确认。"
+        label, rank = "中性·相对历史中位", "neutral"
+        note = "宽度处于历史中位附近（描述性）；需结合日线与回放校准。"
 
     return {
         "label": label,
         "rank": rank,
         "certainty_score": score,
+        "score_note": "分位反转得分，仅描述相对窄/宽，不是预测概率",
         "p33_pct": round(p33, 3),
         "p50_pct": round(p50, 3),
         "p66_pct": round(p66, 3),
         "note": note,
+        "causal": causal,
+        "hist_n": len(clean),
     }
 
 
@@ -474,24 +491,19 @@ def assess_width_for_plan(
 
     if rank == "narrow":
         plan_hint = (
-            "通道偏窄：分歧相对小，条件单买/卖/止损轨位更有参考价值；"
-            "可按方案挂单，但仍须设止损与有效期。"
+            "宽度相对历史偏窄（描述性）：几何轨位更清楚，但仍需看回放命中率与止损。"
         )
-        reasonableness = "更合理（轨位清晰）"
+        reasonableness = "轨位更清晰（未验证期望）"
     elif rank == "wide":
         plan_hint = (
-            "通道偏宽：不确定性偏高，条件单价易被噪声拉宽；"
-            "建议缩小仓位、拉长观察或等宽度收敛后再挂激进单。"
+            "宽度相对历史偏宽（描述性）：几何盈亏比易虚高；宜参考校准层或缩小仓位。"
         )
-        reasonableness = "谨慎（波动偏大）"
+        reasonableness = "波动偏大（未验证期望）"
     elif rank == "neutral":
-        plan_hint = (
-            "通道宽度中性：条件单可挂，宜用日线定方向 + 放量确认；"
-            "有效期按默认 3～10 个交易日即可。"
-        )
-        reasonableness = "可参考"
+        plan_hint = "宽度中性（描述性）：以日线方向 + 回放校准为主。"
+        reasonableness = "描述中性"
     else:
-        plan_hint = "宽度状态未知，仅按轨位设单并严格止损。"
+        plan_hint = "宽度状态未知。"
         reasonableness = "未知"
 
     return {
