@@ -28,6 +28,8 @@ plot = ["matplotlib>=3.8"]
 
 [project.scripts]
 emquote = "emquote.cli:main"
+emplot-channel = "emquote.plot_cli:main_channel"
+emplot-pv = "emquote.plot_cli:main_pv"
 
 [tool.setuptools.packages.find]
 where = ["src"]

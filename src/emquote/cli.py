@@ -12,6 +12,7 @@ from typing import Any
 from .client import EastMoneyClient, QuoteError
 from .levels import parse_channels, suggest_condition_orders
 from .plotting import plot_close_curve, print_condition_levels
+from .plot_cli import main_channel, main_pv
 
 
 def _print_quote(q: dict[str, Any]) -> None:
@@ -128,11 +129,22 @@ def build_parser() -> argparse.ArgumentParser:
     pk.add_argument("--json", action="store_true", help="输出 JSON")
     pk.add_argument("--csv", action="store_true", help="输出 CSV 到 stdout")
 
-    pp = sub.add_parser("plot", help="绘制价格/成交量/通道图并保存 PNG")
+    pp = sub.add_parser("plot", help="绘制价格/成交量/通道图并保存 PNG（通用，可自选通道）")
     _add_kline_fetch_args(pp)
     pp.add_argument("-o", "--output", default="emquote-chart.png", help="输出 PNG 路径")
     _add_channel_args(pp, default="reg")
     pp.add_argument("--no-levels", action="store_true", help="不在图上标注条件单参考价")
+
+    sub.add_parser(
+        "plot-channel",
+        help="【AI 推荐】价格通道图 CLI 别名 → 同 emplot-channel",
+        add_help=False,
+    )
+    sub.add_parser(
+        "plot-pv",
+        help="【AI 推荐】价量通道图 CLI 别名 → 同 emplot-pv",
+        add_help=False,
+    )
 
     pl = sub.add_parser(
         "levels",
@@ -145,6 +157,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    # 两个专用画图工具也可经 emquote 子命令转发，便于统一发现入口。
+    if argv and argv[0] == "plot-channel":
+        return main_channel(argv[1:])
+    if argv and argv[0] == "plot-pv":
+        return main_pv(argv[1:])
+
     args = build_parser().parse_args(argv)
     client = EastMoneyClient(timeout=args.timeout, retries=args.retries)
     try:

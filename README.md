@@ -21,6 +21,30 @@ pip install -e '.[plot]'
 emquote --help
 ```
 
+## 给 AI / 脚本调用的两个画图 CLI
+
+安装 `.[plot]` 后提供两个**独立命令**（参数少、预设固定，适合 agent 直接调用）：
+
+| 命令 | 画什么 | 默认通道 |
+|---|---|---|
+| `emplot-channel` | 价格通道图 + 条件单买/卖/止损 | `reg,donchian` |
+| `emplot-pv` | 价量通道图 + 量均线/触轨放量 + 条件单 | `vwreg,donchian` |
+
+```bash
+# 在线
+emplot-channel 603606.SH -o channel.png
+emplot-pv 603606.SH -o price-volume.png
+
+# 离线样例
+emplot-channel --from-json examples/sample-603606-5m.json --days 10 -o channel.png
+emplot-pv --from-json examples/sample-603606-5m.json --days 10 -o price-volume.png
+
+# AI 友好：JSON 输出条件单价（图仍会保存）
+emplot-pv 603606.SH -o out.png --json
+```
+
+也可写成子命令：`emquote plot-channel ...` / `emquote plot-pv ...`（与上面两个入口等价）。
+
 ## 常用命令
 
 ```bash
@@ -33,9 +57,8 @@ emquote kline 603606.SH -i 5m --days 10
 emquote kline 603606.SH -i 5m --days 10 --csv > bars.csv
 emquote kline 603606.SH -i 1d --days 30
 
-# 画图：上价格下成交量；可叠加多种通道（reg / vwreg / donchian / hl）
+# 通用画图（自选通道）：上价格下成交量
 # vwreg = 成交量加权回归通道（同时考虑价格与量）
-# 短线窗口可收窄到约 1～2 日（5 分钟约 48/96 根）
 emquote plot 603606.SH -i 5m --days 10 --channel vwreg,donchian --channel-window 96 -o out.png
 # 默认按窗口自动切成多段覆盖全时段，并把条件单买/卖/止损画在图上
 # 若只要最近一段：加 --single-window
@@ -53,16 +76,17 @@ emquote levels 603606.SH -i 5m --days 10 --channel vwreg,donchian --channel-wind
 ```bash
 emquote kline --from-json examples/sample-603606-5m.json --days 10
 emquote plot --from-json examples/sample-603606-5m.json --days 10 -o demo.png
-emquote plot --from-json examples/sample-603606-5m.json --days 10 \
-  --channel vwreg,donchian --channel-window 96 \
+emplot-channel --from-json examples/sample-603606-5m.json --days 10 \
+  -o examples/demo-603606-5m-10d.png
+emplot-pv --from-json examples/sample-603606-5m.json --days 10 \
   -o examples/demo-603606-5m-price-volume.png
 ```
 
-示例图（价格通道）：
+示例图（价格通道 · `emplot-channel`）：
 
 ![东方电缆 5 分钟收盘价（近 10 日）](examples/demo-603606-5m-10d.png)
 
-示例图（价量加权通道 + 条件单参考价）：
+示例图（价量通道 · `emplot-pv`）：
 
 ![东方电缆 5 分钟价量通道（近 10 日）](examples/demo-603606-5m-price-volume.png)
 
@@ -72,6 +96,8 @@ emquote plot --from-json examples/sample-603606-5m.json --days 10 \
 |---|---|---|
 | `quote` 实时快照 | ✅ | 代码、名称、最新价、时间 |
 | `kline` 多周期 | ✅ | 含「最近 N 日 × 5 分钟」 |
+| `emplot-channel` | ✅ | 价格通道图独立 CLI（AI 调用） |
+| `emplot-pv` | ✅ | 价量通道图独立 CLI（AI 调用） |
 | `plot` 价格/成交量图 | ✅ | 上价格、下成交量；可叠加 reg/vwreg/donchian/hl |
 | `levels` 条件单参考价 | ✅ | 给出买入/卖出/止损触价，人工录入东财 |
 | JSON / CSV | ✅ | 方便接 pandas / 其它脚本 |
