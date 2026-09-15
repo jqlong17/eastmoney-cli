@@ -1,0 +1,5 @@
+# 基础
+requests>=2.31
+
+# 画图（可选）
+matplotlib>=3.8
