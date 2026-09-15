@@ -35,7 +35,7 @@ emquote kline 603606.SH -i 5m --days 10
 emquote kline 603606.SH -i 5m --days 10 --csv > bars.csv
 emquote kline 603606.SH -i 1d --days 30
 
-# 画最近 10 日 5 分钟收盘价曲线
+# 画最近 10 日 5 分钟收盘价曲线（横轴只排交易 bar，跳过午休/隔夜/周末）
 emquote plot 603606.SH -i 5m --days 10 -o 603606-5m-10d.png
 ```
 
