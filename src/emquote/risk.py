@@ -100,3 +100,109 @@ def net_risk_reward(
         "cost_note": "简化假设：佣金+印花税+滑点；未含冲击成本/涨跌停无法成交",
         "heuristic": True,
     }
+
+
+def infer_limit_pct(symbol: str | None, name: str | None = None) -> dict[str, Any]:
+    """粗估涨跌停幅度（研究用；未覆盖注册制/特别处理全部细则）。"""
+    sym = (symbol or "").upper()
+    code = sym.split(".")[0]
+    nm = name or ""
+    if "ST" in nm.upper() or "st" in nm:
+        pct, board = 0.05, "ST"
+    elif code.startswith(("300", "301", "688")):
+        pct, board = 0.20, "chi_next_star"
+    elif code.startswith(("8", "4")) or sym.endswith(".BJ"):
+        pct, board = 0.30, "bse"
+    else:
+        pct, board = 0.10, "main"
+    return {"limit_pct": pct, "board": board, "heuristic": True}
+
+
+def limit_bands(
+    ref_close: float,
+    *,
+    symbol: str | None = None,
+    name: str | None = None,
+) -> dict[str, Any]:
+    info = infer_limit_pct(symbol, name)
+    pct = float(info["limit_pct"])
+    up = round_price(ref_close * (1.0 + pct))
+    down = round_price(ref_close * (1.0 - pct))
+    return {
+        **info,
+        "ref_close": round_price(ref_close),
+        "limit_up": up,
+        "limit_down": down,
+    }
+
+
+def check_limit_constraints(
+    *,
+    buy: float,
+    sell: float,
+    stop: float,
+    ref_close: float,
+    symbol: str | None = None,
+    name: str | None = None,
+    near_pct: float = 0.005,
+) -> dict[str, Any]:
+    """检查条件单价是否越出/贴近视涨跌停（可能无法成交）。"""
+    bands = limit_bands(ref_close, symbol=symbol, name=name)
+    up = float(bands["limit_up"])
+    down = float(bands["limit_down"])
+    near = max(ref_close * near_pct, 0.01)
+    flags: list[str] = []
+    if buy >= up - near:
+        flags.append("买入触发接近/高于涨停，可能无法买入成交")
+    if buy <= down + near:
+        flags.append("买入触发接近/低于跌停，流动性与成交不确定")
+    if sell >= up - near:
+        flags.append("止盈接近/高于涨停，上涨途中可能封板难卖在目标价")
+    if stop <= down + near:
+        flags.append("止损接近/低于跌停，下跌时可能无法按止损价卖出")
+    if stop >= buy:
+        flags.append("止损不低于买入价，计划结构无效")
+    if sell <= buy:
+        flags.append("止盈不高于买入价，计划结构无效")
+    return {
+        **bands,
+        "flags": flags,
+        "ok": len(flags) == 0,
+        "note": "仅按昨收/参考价×板幅度估算；未模拟盘中换日涨跌停与停牌",
+    }
+
+
+def position_size(
+    *,
+    capital: float,
+    risk_pct: float,
+    buy: float,
+    stop: float,
+    lot_size: int = 100,
+) -> dict[str, Any]:
+    """按「单笔最多亏净值 risk_pct」估算股数（A 股 100 股整手）。"""
+    capital = float(capital)
+    risk_pct = float(risk_pct)
+    risk_per_share = max(float(buy) - float(stop), 1e-9)
+    risk_budget = capital * risk_pct
+    raw_shares = risk_budget / risk_per_share
+    shares = int(raw_shares // lot_size) * lot_size
+    notional = shares * float(buy)
+    max_loss = shares * risk_per_share
+    return {
+        "capital": capital,
+        "risk_pct": risk_pct,
+        "risk_budget": round(risk_budget, 2),
+        "risk_per_share": round_price(risk_per_share),
+        "shares": shares,
+        "lots": shares // lot_size if lot_size else 0,
+        "notional": round(notional, 2),
+        "max_loss_if_stop": round(max_loss, 2),
+        "lot_size": lot_size,
+        "feasible": shares >= lot_size,
+        "note": (
+            "研究用仓位：未含费用/滑点/最小成交约束；"
+            "若 shares=0 说明风险预算买不起 1 手或止损过近"
+        ),
+        "heuristic": True,
+    }

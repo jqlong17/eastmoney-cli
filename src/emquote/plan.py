@@ -7,7 +7,7 @@ from typing import Any
 from .calibrate import calibrate_multi, pick_primary_by_regime
 from .energy import compute_kinetic_energy
 from .levels import round_price, suggest_condition_orders
-from .risk import min_stop_gap, net_risk_reward
+from .risk import check_limit_constraints, min_stop_gap, net_risk_reward, position_size
 
 
 def _validity_for_interval(interval: str) -> dict[str, Any]:
@@ -37,6 +37,9 @@ def build_condition_plan(
     channel_width: float = 2.0,
     full_range: bool = True,
     run_calibration: bool = True,
+    with_param_scan: bool = False,
+    capital: float | None = None,
+    risk_pct: float = 0.01,
 ) -> dict[str, Any]:
     """生成可抄进东财的波段条件单方案（研究用，不下单）。"""
     channels = channels or ["vwreg", "donchian"]
@@ -61,6 +64,7 @@ def build_condition_plan(
             channel_window=cal_window,
             channel_width=channel_width,
             validity_days=5,
+            with_scan=with_param_scan,
         )
 
     primary, regime_meta = pick_primary_by_regime(
@@ -83,8 +87,6 @@ def build_condition_plan(
     min_gap = float(gap_info["gap"])
 
     if kind == "donchian":
-        # levels 里 donchian 的 sell 是「跌破卖出」，不能当多头止盈。
-        # 计划层改为：突破买入 → 止损中轴 → 止盈=买入价+半通道宽度。
         buy = round_price(upper + max(round_price(last_close * 0.002), 0.01))
         stop = round_price(mid)
         half = max(abs(upper - mid), min_gap)
@@ -108,7 +110,6 @@ def build_condition_plan(
     rr_info = net_risk_reward(buy, sell, stop)
     validity = _validity_for_interval(str(kline.get("interval") or report.get("interval") or "5m"))
 
-    # 宽度仅作描述性附注，不再自动改有效期（缺乏证据）；改由校准 fill 率提示
     validity = {
         **validity,
         "width_note": width_assessment.get("plan_hint") or "",
@@ -130,6 +131,26 @@ def build_condition_plan(
         elif isinstance(expire_share, (int, float)) and expire_share < 0.25:
             validity["calibration_note"] = "回放中成交相对容易；有效期可维持默认。"
 
+    # 涨跌停参考：用前收（倒数第二根收盘）近似
+    ref_close = float(bars[-2]["close"]) if len(bars) >= 2 else last_close
+    limits = check_limit_constraints(
+        buy=buy,
+        sell=sell,
+        stop=stop,
+        ref_close=ref_close,
+        symbol=str(report.get("symbol") or kline.get("symbol") or ""),
+        name=str(report.get("name") or kline.get("name") or ""),
+    )
+
+    sizing = None
+    if capital is not None and capital > 0:
+        sizing = position_size(
+            capital=float(capital),
+            risk_pct=float(risk_pct),
+            buy=buy,
+            stop=stop,
+        )
+
     invalidation = [
         f"收盘价跌破止损参考价 {stop:.2f}（计划失效，不再等待买入/持有）",
         f"有效期内价格从未进入买入区 {buy_low:.2f}～{buy_high:.2f}，到期后需重新评估",
@@ -137,6 +158,8 @@ def build_condition_plan(
     ]
     if kind == "donchian":
         invalidation.append(f"突破后迅速回到中轴附近 {mid:.2f}，视为假突破")
+    for flag in limits.get("flags") or []:
+        invalidation.append(f"涨跌停约束：{flag}")
 
     adjust = str(kline.get("adjust") or "unknown")
     data_notes = []
@@ -144,13 +167,16 @@ def build_condition_plan(
         data_notes.append(
             "当前 K 线复权标记为 none/未知：跨除权波段轨位可能跳变，研究波段建议 --adjust qfq"
         )
+    if limits.get("flags"):
+        data_notes.append("存在涨跌停相关成交风险，见 limits.flags")
 
     how_to = [
         "在东方财富创建条件单：买入触发 ≈ 买入区触发价；止盈/止损分开挂或持仓后补挂",
         f"建议有效期约 {validity['suggested_trading_days']} 个交易日"
         f"（可在 {validity['min_trading_days']}～{validity['max_trading_days']} 日内自行调整）",
         "主图：日线定方向 + 5m 价量通道定触发带；宽度/动能为描述性状态，分时非设单主依据",
-        "优先看【历史校准】触达率；几何盈亏比未扣足实盘摩擦前不要当期望",
+        "优先看【历史校准】触达率与参数扫描稳定性；几何盈亏比不是期望",
+        "仓位按 risk_pct×资金 / 每股风险估算（若提供 --capital）；涨跌停可能导致无法按计划成交",
         "工具只提供研究参考价，需人工录入条件单；不下单、不连接交易",
     ]
     if width_assessment.get("plan_hint"):
@@ -165,6 +191,7 @@ def build_condition_plan(
     cal_summary = None
     if isinstance(primary_cal, dict) and primary_cal.get("ok"):
         rates = primary_cal.get("rates") or {}
+        eb = primary_cal.get("empirical_bayes") or {}
         cal_summary = {
             "kind": kind,
             "decisions": primary_cal.get("decisions"),
@@ -175,7 +202,19 @@ def build_condition_plan(
             "tp_given_fill_ci80": (rates.get("tp_given_fill") or {}).get("ci80"),
             "stop_given_fill_posterior_mean": (rates.get("stop_given_fill") or {}).get("mean"),
             "avg_net_r_when_resolved": primary_cal.get("avg_net_r_when_resolved"),
+            "empirical_bayes_mode": eb.get("mode"),
             "disclaimer": primary_cal.get("disclaimer"),
+        }
+
+    scan_summary = None
+    if calibration and kind and (calibration.get("parameter_scan") or {}).get(kind):
+        sc = calibration["parameter_scan"][kind]
+        scan_summary = {
+            "stability": sc.get("stability"),
+            "tp_mean_avg": sc.get("tp_mean_avg"),
+            "tp_mean_std": sc.get("tp_mean_std"),
+            "best": sc.get("best"),
+            "note": sc.get("note"),
         }
 
     return {
@@ -224,6 +263,8 @@ def build_condition_plan(
             "heuristic": True,
             "note": "ratio 为几何盈亏比；ratio_net 为简化费用后，仍非期望 R",
         },
+        "position": sizing,
+        "limits": limits,
         "width": {
             "rank": width_assessment.get("rank"),
             "label": width_assessment.get("label"),
@@ -249,6 +290,7 @@ def build_condition_plan(
             "causal": energy_assess.get("causal"),
         },
         "calibration": cal_summary,
+        "parameter_stability": scan_summary,
         "calibration_detail": calibration,
         "data_notes": data_notes,
         "invalidation": invalidation,
@@ -257,7 +299,7 @@ def build_condition_plan(
         "charts_optional": [],
         "levels_report": report,
         "disclaimer": (
-            "研究参考而非投资建议；几何轨位 + 描述性状态 + 单票短样本回放。"
+            "研究参考而非投资建议；几何轨位 + 描述性状态 + 单票时序回放。"
             "人工录入条件单；不下单、不保证触达或收益。"
         ),
     }
@@ -307,12 +349,40 @@ def print_condition_plan(plan: dict[str, Any]) -> None:
             f"  几何盈亏比: {rr.get('ratio_gross')}  |  简化费用后: {rr.get('ratio_net')}  "
             f"（成本率≈{rr.get('cost_pct_round_trip')}；{rr.get('note')}）"
         )
+    pos = plan.get("position")
+    if pos:
+        print()
+        print("【仓位预算（研究用）】")
+        print(
+            f"  资金 {pos.get('capital')} × 风险 {float(pos.get('risk_pct') or 0)*100:.2f}% "
+            f"→ 预算 {pos.get('risk_budget')}  → 约 {pos.get('shares')} 股 "
+            f"（{pos.get('lots')} 手）名义 {pos.get('notional')}  "
+            f"止损最大亏约 {pos.get('max_loss_if_stop')}"
+        )
+        if not pos.get("feasible"):
+            print("  ⚠ 买不起 1 手或止损过近，请提高资金或放宽 risk_pct")
+        print(f"  注: {pos.get('note')}")
+    lim = plan.get("limits") or {}
+    if lim:
+        print()
+        print("【涨跌停约束（粗估）】")
+        print(
+            f"  板块 {lim.get('board')} ±{float(lim.get('limit_pct') or 0)*100:.0f}%  "
+            f"参考价 {lim.get('ref_close')}  "
+            f"涨停 {lim.get('limit_up')} / 跌停 {lim.get('limit_down')}"
+        )
+        if lim.get("flags"):
+            for f in lim["flags"]:
+                print(f"  ⚠ {f}")
+        else:
+            print("  当前买/卖/止损未明显贴板")
     cal = plan.get("calibration") or {}
     if cal:
         print()
-        print("【历史校准 walk-forward · 弱先验收缩】")
+        print("【历史校准 walk-forward · 时序经验贝叶斯】")
         print(
             f"  决策点: {cal.get('decisions')}  质量: {cal.get('quality')}  "
+            f"EB模式: {cal.get('empirical_bayes_mode')}  "
             f"成交后验均值: {cal.get('fill_posterior_mean')}"
         )
         print(
@@ -326,6 +396,22 @@ def print_condition_plan(plan: dict[str, Any]) -> None:
             print(f"  提示: {cal.get('hint')}")
         if cal.get("disclaimer"):
             print(f"  声明: {cal.get('disclaimer')}")
+    stab = plan.get("parameter_stability") or {}
+    if stab:
+        print()
+        print("【参数稳定性扫描】")
+        print(
+            f"  稳定性: {stab.get('stability')}  "
+            f"tp均值 {stab.get('tp_mean_avg')} ± {stab.get('tp_mean_std')}"
+        )
+        if stab.get("best"):
+            b = stab["best"]
+            print(
+                f"  网格较优: window={b.get('window')} σ={b.get('width')}  "
+                f"edge={b.get('edge')} tp={b.get('tp_mean')}"
+            )
+        if stab.get("note"):
+            print(f"  注: {stab.get('note')}")
     w = plan.get("width") or {}
     if w:
         print()

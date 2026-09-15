@@ -85,10 +85,10 @@ emplot-ke 603606.SH -o ke.png --json
 
 ```bash
 # 波段条件单方案（买入区/止盈/止损/有效期/失效条件 + 历史校准）
-emquote plan 603606.SH -i 5m --days 10 --channel vwreg,donchian
-emquote plan 603606.SH -i 5m --days 10 --channel vwreg,donchian --json
-# 只要回放命中后验（walk-forward）
-emquote calibrate 603606.SH -i 5m --days 10 --channel vwreg,donchian
+emquote plan 603606.SH -i 5m --days 10 --channel vwreg,donchian --capital 100000 --risk-pct 0.01
+emquote plan 603606.SH -i 5m --days 20 --channel vwreg,donchian --scan --json
+# 只要回放命中后验（walk-forward）；可加 --scan 做参数稳定性
+emquote calibrate 603606.SH -i 5m --days 20 --channel vwreg,donchian --scan
 
 # 实时报价
 emquote quote 603606.SH
@@ -176,8 +176,8 @@ K 线蜡烛（`emplot-kline`）：
 | `emplot-intraday` | 遗留 | 分时辅图；条件单主路径默认不用 |
 | `plot` 价格/成交量图 | ✅ | 上价格、下成交量；可叠加 reg/vwreg/donchian/hl |
 | `levels` 条件单参考价 | ✅ | 给出买入/卖出/止损触价，人工录入东财 |
-| `plan` 条件单方案 | ✅ | 轨位 + ATR 止损间距 + 费用后 RR + walk-forward 校准 |
-| `calibrate` 历史校准 | ✅ | 触达/先止盈/先止损后验（弱先验收缩） |
+| `plan` 条件单方案 | ✅ | 轨位 + ATR + 费用后 RR + 仓位预算 + 涨跌停检查 + 时序校准 |
+| `calibrate` 历史校准 | ✅ | walk-forward 触达后验；可选 `--scan` 参数稳定性 |
 | K 线本地缓存 | ✅ | `~/.cache/emquote/kline/`，断线可回退；`--refresh` 强刷 |
 | `ashare-swing` Skill | ✅ | Cursor 中短线看盘：出图 + 条件单价 + 研究备注 |
 | JSON / CSV | ✅ | 方便接 pandas / 其它脚本 |

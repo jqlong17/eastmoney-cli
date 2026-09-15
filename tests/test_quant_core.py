@@ -6,12 +6,18 @@ import json
 import unittest
 from pathlib import Path
 
-from emquote.calibrate import calibrate_condition_orders, calibrate_multi
+from emquote.calibrate import calibrate_condition_orders, calibrate_multi, scan_parameter_stability
 from emquote.client import EastMoneyClient
 from emquote.energy import compute_kinetic_energy
 from emquote.levels import compute_channel_width, relative_width_pct
 from emquote.plan import build_condition_plan
-from emquote.risk import atr, min_stop_gap, net_risk_reward
+from emquote.risk import (
+    atr,
+    check_limit_constraints,
+    min_stop_gap,
+    net_risk_reward,
+    position_size,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -41,6 +47,24 @@ class RiskTests(unittest.TestCase):
         self.assertIsNotNone(rr["ratio_net"])
         assert rr["ratio_gross"] is not None and rr["ratio_net"] is not None
         self.assertLess(rr["ratio_net"], rr["ratio_gross"])
+
+    def test_position_lots(self) -> None:
+        pos = position_size(capital=100_000, risk_pct=0.01, buy=10.0, stop=9.5)
+        self.assertGreaterEqual(pos["shares"], 100)
+        self.assertEqual(pos["shares"] % 100, 0)
+        self.assertTrue(pos["feasible"])
+
+    def test_limit_flags_structure(self) -> None:
+        lim = check_limit_constraints(
+            buy=10.0, sell=10.5, stop=9.5, ref_close=10.0, symbol="603606.SH", name="东方电缆"
+        )
+        self.assertIn("limit_up", lim)
+        self.assertTrue(lim["ok"])
+        bad = check_limit_constraints(
+            buy=10.95, sell=11.0, stop=9.0, ref_close=10.0, symbol="603606.SH"
+        )
+        self.assertFalse(bad["ok"])
+        self.assertTrue(any("涨停" in f for f in bad["flags"]))
 
 
 class LevelsEnergyTests(unittest.TestCase):
@@ -76,16 +100,29 @@ class CalibrateTests(unittest.TestCase):
         out = calibrate_multi(k, kinds=["vwreg", "donchian"], channel_window=96)
         self.assertIn(out.get("suggested_primary"), {"vwreg", "donchian", None})
 
+    def test_param_scan(self) -> None:
+        k = _sample_kline()
+        sc = scan_parameter_stability(k, kind="vwreg", windows=[48, 96], widths=[2.0])
+        self.assertIn(sc.get("stability"), {"stable", "moderate", "fragile", "insufficient"})
+
 
 class PlanTests(unittest.TestCase):
     def test_plan_includes_calibration(self) -> None:
         k = _sample_kline()
-        plan = build_condition_plan(k, channels=["vwreg", "donchian"], channel_window=96)
+        plan = build_condition_plan(
+            k,
+            channels=["vwreg", "donchian"],
+            channel_window=96,
+            capital=100_000,
+            risk_pct=0.01,
+        )
         self.assertIn("risk_reward", plan)
         self.assertIn("ratio_net", plan["risk_reward"])
         self.assertIn("gap", plan["stop_loss"])
-        # 样本足够时应有校准摘要
         self.assertTrue(plan.get("calibration") or plan.get("calibration_detail"))
+        self.assertIn("limits", plan)
+        self.assertIsNotNone(plan.get("position"))
+        self.assertIn("empirical_bayes", (plan.get("calibration_detail") or {}).get("by_kind", {}).get("vwreg") or {})
 
 
 if __name__ == "__main__":

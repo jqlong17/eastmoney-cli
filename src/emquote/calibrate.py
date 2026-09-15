@@ -31,10 +31,11 @@ def _bars_per_day(interval: str) -> int:
 
 def _beta_mean(wins: int, n: int, *, a: float = 2.0, b: float = 2.0) -> dict[str, Any]:
     """Beta(a,b) 先验 + Binomial 似然 → 后验均值与 80% 近似区间（正态近似）。"""
+    n = max(int(n), 0)
+    wins = max(0, min(int(wins), n)) if n else 0
     post_a = a + wins
     post_b = b + max(n - wins, 0)
     mean = post_a / (post_a + post_b)
-    # 正态近似分位：z≈1.28 → 80%
     var = post_a * post_b / ((post_a + post_b) ** 2 * (post_a + post_b + 1.0))
     std = var ** 0.5
     lo = max(0.0, mean - 1.28 * std)
@@ -46,6 +47,305 @@ def _beta_mean(wins: int, n: int, *, a: float = 2.0, b: float = 2.0) -> dict[str
         "posterior": {"alpha": round(post_a, 4), "beta": round(post_b, 4)},
         "n": n,
         "wins": wins,
+    }
+
+
+def _count_outcomes(outcomes: list[str]) -> dict[str, int]:
+    counts = {
+        "tp_first": 0,
+        "stop_first": 0,
+        "expire_unfilled": 0,
+        "timeout_after_fill": 0,
+    }
+    for o in outcomes:
+        if o in counts:
+            counts[o] += 1
+    return counts
+
+
+def _rates_from_counts(
+    counts: dict[str, int],
+    *,
+    prior_a: float = 2.0,
+    prior_b: float = 2.0,
+) -> dict[str, Any]:
+    decisions = sum(counts.values())
+    filled = counts["tp_first"] + counts["stop_first"] + counts["timeout_after_fill"]
+    return {
+        "fill": _beta_mean(filled, max(decisions, 1), a=prior_a, b=prior_b),
+        "tp_given_fill": _beta_mean(counts["tp_first"], max(filled, 1), a=prior_a, b=prior_b),
+        "stop_given_fill": _beta_mean(counts["stop_first"], max(filled, 1), a=prior_a, b=prior_b),
+        "tp_vs_all_decisions": _beta_mean(counts["tp_first"], max(decisions, 1), a=prior_a, b=prior_b),
+        "expire_unfilled_share": round(counts["expire_unfilled"] / max(decisions, 1), 4),
+        "decisions": decisions,
+        "filled": filled,
+    }
+
+
+def _walk_outcomes(
+    bars: list[dict[str, Any]],
+    *,
+    kind: str,
+    channel_width: float,
+    interval: str,
+    w: int,
+    horizon: int,
+    step: int,
+    cost_pct: float,
+) -> tuple[list[str], list[float]]:
+    outcomes: list[str] = []
+    filled_net_rs: list[float] = []
+    last_t = len(bars) - horizon - 1
+    for t in range(w - 1, last_t + 1, step):
+        slice_bars = bars[t - w + 1 : t + 1]
+        try:
+            rails = _rails_for_kind(
+                slice_bars,
+                kind=kind,
+                channel_width=channel_width,
+                interval=interval,
+            )
+        except ValueError:
+            continue
+        if rails["buy"] <= rails["stop"] or rails["sell"] <= rails["buy"]:
+            continue
+        outcome = _simulate_one(bars, t, rails, horizon=horizon)
+        outcomes.append(outcome)
+        if outcome in {"tp_first", "stop_first"}:
+            rr = net_risk_reward(rails["buy"], rails["sell"], rails["stop"], cost_pct=cost_pct)
+            if outcome == "tp_first" and rr.get("ratio_net") is not None:
+                filled_net_rs.append(float(rr["ratio_net"]))
+            else:
+                filled_net_rs.append(-1.0)
+    return outcomes, filled_net_rs
+
+
+def calibrate_condition_orders(
+    kline: dict[str, Any],
+    *,
+    kind: str = "vwreg",
+    channel_window: int = 96,
+    channel_width: float = 2.0,
+    validity_days: int = 5,
+    step_days: float = 0.5,
+    cost_pct: float | None = None,
+) -> dict[str, Any]:
+    """对单通道风格做 walk-forward 触达校准（含同票时序经验贝叶斯）。"""
+    bars = kline.get("bars") or []
+    interval = str(kline.get("interval") or "5m")
+    bpd = max(1, _bars_per_day(interval))
+    w = channel_window if channel_window > 0 else max(bpd, 96 if bpd >= 48 else 20)
+    w = min(max(w, 20), len(bars))
+    horizon = max(bpd, int(validity_days * bpd))
+    step = max(1, int(step_days * bpd))
+    if cost_pct is None:
+        cost_pct = round_trip_cost_pct()
+
+    if len(bars) < w + horizon + 5:
+        return {
+            "ok": False,
+            "reason": "样本不足以做 walk-forward 校准",
+            "bars": len(bars),
+            "need_at_least": w + horizon + 5,
+            "kind": kind,
+        }
+
+    outcomes, filled_net_rs = _walk_outcomes(
+        bars,
+        kind=kind,
+        channel_width=channel_width,
+        interval=interval,
+        w=w,
+        horizon=horizon,
+        step=step,
+        cost_pct=cost_pct,
+    )
+    counts = _count_outcomes(outcomes)
+    decisions = len(outcomes)
+    # 同票时序 EB：前半决策估先验，后半做似然更新（防用全样本又当先验又当似然）
+    split = max(1, decisions // 2)
+    early = outcomes[:split]
+    late = outcomes[split:] if decisions >= 6 else outcomes
+    early_c = _count_outcomes(early)
+    late_c = _count_outcomes(late)
+    early_filled = early_c["tp_first"] + early_c["stop_first"] + early_c["timeout_after_fill"]
+    # 先验强度封顶，避免早期噪声主导
+    prior_tp_a = 2.0 + min(early_c["tp_first"], 20)
+    prior_tp_b = 2.0 + min(max(early_filled - early_c["tp_first"], 0), 20)
+    prior_fill_a = 2.0 + min(early_filled, 20)
+    prior_fill_b = 2.0 + min(max(len(early) - early_filled, 0), 20)
+
+    if decisions >= 6 and late:
+        tp_given_fill = _beta_mean(
+            late_c["tp_first"],
+            max(late_c["tp_first"] + late_c["stop_first"] + late_c["timeout_after_fill"], 1),
+            a=prior_tp_a,
+            b=prior_tp_b,
+        )
+        fill_rate = _beta_mean(
+            late_c["tp_first"] + late_c["stop_first"] + late_c["timeout_after_fill"],
+            max(len(late), 1),
+            a=prior_fill_a,
+            b=prior_fill_b,
+        )
+        stop_given_fill = _beta_mean(
+            late_c["stop_first"],
+            max(late_c["tp_first"] + late_c["stop_first"] + late_c["timeout_after_fill"], 1),
+            a=2.0 + min(early_c["stop_first"], 20),
+            b=2.0 + min(max(early_filled - early_c["stop_first"], 0), 20),
+        )
+        tp_vs_all = _beta_mean(late_c["tp_first"], max(len(late), 1), a=prior_tp_a, b=prior_tp_b)
+        eb_mode = "time_series_split"
+        expire_share = round(late_c["expire_unfilled"] / max(len(late), 1), 4)
+    else:
+        rates_flat = _rates_from_counts(counts)
+        tp_given_fill = rates_flat["tp_given_fill"]
+        stop_given_fill = rates_flat["stop_given_fill"]
+        fill_rate = rates_flat["fill"]
+        tp_vs_all = rates_flat["tp_vs_all_decisions"]
+        expire_share = rates_flat["expire_unfilled_share"]
+        eb_mode = "weak_beta_2_2"
+
+    avg_net_r = sum(filled_net_rs) / len(filled_net_rs) if filled_net_rs else None
+
+    if decisions < 8:
+        hint = "同窗决策点过少，后验很宽，仅供参考，不可当作胜率承诺。"
+        quality = "low_sample"
+    elif fill_rate["mean"] < 0.15:
+        hint = "历史同类挂单成交偏少；有效期或买入区可能过窄/过远。"
+        quality = "low_fill"
+    elif tp_given_fill["mean"] + 0.05 < stop_given_fill["mean"]:
+        hint = "费用后口径下，历史更常先触止损；回踩单宜降仓或等更窄宽度/动能回落。"
+        quality = "stop_heavy"
+    elif tp_given_fill["mean"] > stop_given_fill["mean"] + 0.05:
+        hint = "时序收缩后先触止盈略占优；仍须独立风控，不是未来胜率。"
+        quality = "tp_lean"
+    else:
+        hint = "先触止盈/止损接近；边缘取决于费用、滑点与日线方向过滤。"
+        quality = "mixed"
+
+    return {
+        "ok": True,
+        "kind": kind,
+        "heuristic": False,
+        "method": "walk_forward_touch",
+        "definition": {
+            "lookback_bars": w,
+            "horizon_bars": horizon,
+            "validity_days": validity_days,
+            "step_bars": step,
+            "touch_rule": "K线 high/low 与买入区/止盈/止损价相交即视为触达",
+            "ambiguity": "同一根既触止盈又触止损 → 记 stop_first（保守）",
+            "no_lookahead": "决策只用当时末 W 根估计通道",
+            "empirical_bayes": eb_mode,
+        },
+        "cost_pct_round_trip": cost_pct,
+        "decisions": decisions,
+        "counts": counts,
+        "rates": {
+            "fill": fill_rate,
+            "tp_given_fill": tp_given_fill,
+            "stop_given_fill": stop_given_fill,
+            "tp_vs_all_decisions": tp_vs_all,
+            "expire_unfilled_share": expire_share,
+        },
+        "empirical_bayes": {
+            "mode": eb_mode,
+            "early_decisions": len(early),
+            "late_decisions": len(late) if decisions >= 6 else decisions,
+            "prior_tp": {"alpha": prior_tp_a, "beta": prior_tp_b},
+            "note": "前半段决策构造先验，后半段更新；样本少时退回 Beta(2,2)",
+        },
+        "avg_net_r_when_resolved": None if avg_net_r is None else round(avg_net_r, 4),
+        "quality": quality,
+        "hint": hint,
+        "disclaimer": (
+            "单票时序回放 + 弱/经验先验收缩，不是未来胜率；"
+            "未完整覆盖涨跌停无法成交、停牌与冲击成本。"
+        ),
+    }
+
+
+def scan_parameter_stability(
+    kline: dict[str, Any],
+    *,
+    kind: str = "vwreg",
+    validity_days: int = 5,
+    windows: list[int] | None = None,
+    widths: list[float] | None = None,
+) -> dict[str, Any]:
+    """扫描 channel_window × σ 宽度，看触止盈后验是否稳健。"""
+    windows = windows or [48, 96, 144]
+    widths = widths or [1.5, 2.0, 2.5]
+    rows: list[dict[str, Any]] = []
+    for w in windows:
+        for sigma in widths:
+            item = calibrate_condition_orders(
+                kline,
+                kind=kind,
+                channel_window=int(w),
+                channel_width=float(sigma),
+                validity_days=validity_days,
+            )
+            if not item.get("ok"):
+                rows.append(
+                    {
+                        "window": w,
+                        "width": sigma,
+                        "ok": False,
+                        "reason": item.get("reason"),
+                    }
+                )
+                continue
+            tp = (item.get("rates") or {}).get("tp_given_fill") or {}
+            st = (item.get("rates") or {}).get("stop_given_fill") or {}
+            rows.append(
+                {
+                    "window": w,
+                    "width": sigma,
+                    "ok": True,
+                    "decisions": item.get("decisions"),
+                    "quality": item.get("quality"),
+                    "tp_mean": tp.get("mean"),
+                    "stop_mean": st.get("mean"),
+                    "edge": round(float(tp.get("mean") or 0) - float(st.get("mean") or 0), 4),
+                    "avg_net_r": item.get("avg_net_r_when_resolved"),
+                }
+            )
+    ok_rows = [r for r in rows if r.get("ok") and r.get("tp_mean") is not None]
+    tp_vals = [float(r["tp_mean"]) for r in ok_rows]
+    edge_vals = [float(r["edge"]) for r in ok_rows]
+    if tp_vals:
+        mean_tp = sum(tp_vals) / len(tp_vals)
+        var_tp = sum((x - mean_tp) ** 2 for x in tp_vals) / len(tp_vals)
+        std_tp = var_tp ** 0.5
+        best = max(ok_rows, key=lambda r: float(r.get("edge") or -9))
+        if std_tp <= 0.05:
+            stability = "stable"
+            note = "不同 window/σ 下触止盈后验波动较小，参数不那么脆弱。"
+        elif std_tp <= 0.12:
+            stability = "moderate"
+            note = "参数有一定敏感性；报告结论时注明所用 window/σ。"
+        else:
+            stability = "fragile"
+            note = "参数很敏感：换 window/σ 结论变化大，勿过度解读单组参数。"
+    else:
+        mean_tp = None
+        std_tp = None
+        best = None
+        stability = "insufficient"
+        note = "有效扫描点不足。"
+
+    return {
+        "kind": kind,
+        "grid": rows,
+        "tp_mean_avg": None if mean_tp is None else round(mean_tp, 4),
+        "tp_mean_std": None if std_tp is None else round(std_tp, 4),
+        "edge_avg": round(sum(edge_vals) / len(edge_vals), 4) if edge_vals else None,
+        "best": best,
+        "stability": stability,
+        "note": note,
+        "disclaimer": "参数扫描仍是同票短样本内比较，不是跨市场稳健性证明。",
     }
 
 
@@ -142,131 +442,6 @@ def _simulate_one(
     return "timeout_after_fill"
 
 
-def calibrate_condition_orders(
-    kline: dict[str, Any],
-    *,
-    kind: str = "vwreg",
-    channel_window: int = 96,
-    channel_width: float = 2.0,
-    validity_days: int = 5,
-    step_days: float = 0.5,
-    cost_pct: float | None = None,
-) -> dict[str, Any]:
-    """对单通道风格做 walk-forward 触达校准。"""
-    bars = kline.get("bars") or []
-    interval = str(kline.get("interval") or "5m")
-    bpd = max(1, _bars_per_day(interval))
-    w = channel_window if channel_window > 0 else max(bpd, 96 if bpd >= 48 else 20)
-    w = min(max(w, 20), len(bars))
-    horizon = max(bpd, int(validity_days * bpd))
-    step = max(1, int(step_days * bpd))
-    if cost_pct is None:
-        cost_pct = round_trip_cost_pct()
-
-    if len(bars) < w + horizon + 5:
-        return {
-            "ok": False,
-            "reason": "样本不足以做 walk-forward 校准",
-            "bars": len(bars),
-            "need_at_least": w + horizon + 5,
-            "kind": kind,
-        }
-
-    counts = {
-        "tp_first": 0,
-        "stop_first": 0,
-        "expire_unfilled": 0,
-        "timeout_after_fill": 0,
-    }
-    filled_net_rs: list[float] = []
-    decisions = 0
-    # 决策点：留出未来 horizon，且有足够 lookback
-    last_t = len(bars) - horizon - 1
-    for t in range(w - 1, last_t + 1, step):
-        slice_bars = bars[t - w + 1 : t + 1]
-        try:
-            rails = _rails_for_kind(
-                slice_bars,
-                kind=kind,
-                channel_width=channel_width,
-                interval=interval,
-            )
-        except ValueError:
-            continue
-        if rails["buy"] <= rails["stop"] or rails["sell"] <= rails["buy"]:
-            continue
-        outcome = _simulate_one(bars, t, rails, horizon=horizon)
-        counts[outcome] = counts.get(outcome, 0) + 1
-        decisions += 1
-        if outcome in {"tp_first", "stop_first"}:
-            rr = net_risk_reward(rails["buy"], rails["sell"], rails["stop"], cost_pct=cost_pct)
-            # 记 +net_rr 或 -1R（费用后）
-            if outcome == "tp_first" and rr.get("ratio_net") is not None:
-                filled_net_rs.append(float(rr["ratio_net"]))
-            else:
-                filled_net_rs.append(-1.0)
-
-    filled = counts["tp_first"] + counts["stop_first"] + counts["timeout_after_fill"]
-    # 触止盈率：以「已成交」为条件；另报「相对全部决策」
-    tp_given_fill = _beta_mean(counts["tp_first"], max(filled, 1))
-    # 若几乎无成交，用全部决策里的 tp 作弱信号
-    tp_vs_all = _beta_mean(counts["tp_first"], max(decisions, 1))
-    stop_given_fill = _beta_mean(counts["stop_first"], max(filled, 1))
-    fill_rate = _beta_mean(filled, max(decisions, 1))
-
-    avg_net_r = sum(filled_net_rs) / len(filled_net_rs) if filled_net_rs else None
-
-    # 可读提示（避免过声称）
-    if decisions < 8:
-        hint = "同窗决策点过少，后验很宽，仅供参考，不可当作胜率承诺。"
-        quality = "low_sample"
-    elif fill_rate["mean"] < 0.15:
-        hint = "历史同类挂单成交偏少；有效期或买入区可能过窄/过远。"
-        quality = "low_fill"
-    elif tp_given_fill["mean"] + 0.05 < stop_given_fill["mean"]:
-        hint = "费用后口径下，历史更常先触止损；回踩单宜降杠杆或等更窄宽度/动能回落。"
-        quality = "stop_heavy"
-    elif tp_given_fill["mean"] > stop_given_fill["mean"] + 0.05:
-        hint = "历史样本中先触止盈略占优（弱先验收缩后）；仍须独立风控。"
-        quality = "tp_lean"
-    else:
-        hint = "先触止盈/止损接近；边缘取决于费用、滑点与日线方向过滤。"
-        quality = "mixed"
-
-    return {
-        "ok": True,
-        "kind": kind,
-        "heuristic": False,
-        "method": "walk_forward_touch",
-        "definition": {
-            "lookback_bars": w,
-            "horizon_bars": horizon,
-            "validity_days": validity_days,
-            "step_bars": step,
-            "touch_rule": "K线 high/low 与买入区/止盈/止损价相交即视为触达",
-            "ambiguity": "同一根既触止盈又触止损 → 记 stop_first（保守）",
-            "no_lookahead": "决策只用当时末 W 根估计通道",
-        },
-        "cost_pct_round_trip": cost_pct,
-        "decisions": decisions,
-        "counts": counts,
-        "rates": {
-            "fill": fill_rate,
-            "tp_given_fill": tp_given_fill,
-            "stop_given_fill": stop_given_fill,
-            "tp_vs_all_decisions": tp_vs_all,
-            "expire_unfilled_share": round(counts["expire_unfilled"] / max(decisions, 1), 4),
-        },
-        "avg_net_r_when_resolved": None if avg_net_r is None else round(avg_net_r, 4),
-        "quality": quality,
-        "hint": hint,
-        "disclaimer": (
-            "单票、短样本、弱先验收缩的研究回放，不是未来胜率；"
-            "未覆盖涨跌停无法成交、停牌与冲击成本。"
-        ),
-    }
-
-
 def calibrate_multi(
     kline: dict[str, Any],
     *,
@@ -274,6 +449,7 @@ def calibrate_multi(
     channel_window: int = 96,
     channel_width: float = 2.0,
     validity_days: int = 5,
+    with_scan: bool = False,
 ) -> dict[str, Any]:
     kinds = kinds or ["vwreg", "donchian"]
     by_kind = {
@@ -296,7 +472,6 @@ def calibrate_multi(
         st = (rates.get("stop_given_fill") or {}).get("mean")
         if tp is None or st is None:
             return -1.0
-        # 样本惩罚
         n = float(item.get("decisions") or 0)
         return float(tp) - float(st) + min(n, 30) / 300.0
 
@@ -308,12 +483,21 @@ def calibrate_multi(
             best_s = s
             best = k
 
+    scans = None
+    if with_scan:
+        scans = {
+            k: scan_parameter_stability(kline, kind=k, validity_days=validity_days)
+            for k in kinds
+            if k != "none"
+        }
+
     return {
         "symbol": kline.get("symbol"),
         "name": kline.get("name"),
         "interval": kline.get("interval"),
         "by_kind": by_kind,
         "suggested_primary": best,
+        "parameter_scan": scans,
         "note": "suggested_primary 仅按本段回放的（触止盈−触止损）差选择，样本不足时不可靠。",
     }
 

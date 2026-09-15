@@ -213,6 +213,23 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="跳过 walk-forward 历史校准（更快，但不输出命中后验）",
     )
+    ppn.add_argument(
+        "--scan",
+        action="store_true",
+        help="附加 window×σ 参数稳定性扫描（更慢）",
+    )
+    ppn.add_argument(
+        "--capital",
+        type=float,
+        default=None,
+        help="账户资金（元），用于按风险预算估算股数",
+    )
+    ppn.add_argument(
+        "--risk-pct",
+        type=float,
+        default=0.01,
+        help="单笔最大亏损占资金比例，默认 0.01（即 1%%）",
+    )
 
     pc = sub.add_parser(
         "calibrate",
@@ -221,6 +238,11 @@ def build_parser() -> argparse.ArgumentParser:
     _add_kline_fetch_args(pc)
     _add_channel_args(pc, default="vwreg,donchian")
     pc.add_argument("--validity-days", type=int, default=5, help="有效期交易日，默认 5")
+    pc.add_argument(
+        "--scan",
+        action="store_true",
+        help="扫描 channel_window×σ 稳定性",
+    )
     pc.add_argument("--json", action="store_true", help="输出 JSON")
     return p
 
@@ -319,6 +341,9 @@ def main(argv: list[str] | None = None) -> int:
                 channel_width=args.channel_width,
                 full_range=not args.single_window,
                 run_calibration=not bool(getattr(args, "no_calibrate", False)),
+                with_param_scan=bool(getattr(args, "scan", False)),
+                capital=getattr(args, "capital", None),
+                risk_pct=float(getattr(args, "risk_pct", 0.01) or 0.01),
             )
             if args.json:
                 # JSON 里去掉嵌套 levels 的冗余大字段可保留；便于 AI
@@ -337,6 +362,7 @@ def main(argv: list[str] | None = None) -> int:
                 channel_window=window,
                 channel_width=args.channel_width,
                 validity_days=int(args.validity_days),
+                with_scan=bool(getattr(args, "scan", False)),
             )
             if args.json:
                 _emit_json(report)
@@ -354,7 +380,11 @@ def main(argv: list[str] | None = None) -> int:
                         print(f"  跳过: {item.get('reason')}")
                         continue
                     rates = item.get("rates") or {}
-                    print(f"  决策点: {item.get('decisions')}  质量: {item.get('quality')}")
+                    eb = item.get("empirical_bayes") or {}
+                    print(
+                        f"  决策点: {item.get('decisions')}  质量: {item.get('quality')}  "
+                        f"EB: {eb.get('mode')}"
+                    )
                     print(
                         f"  成交后验: {rates.get('fill', {}).get('mean')}  "
                         f"先止盈|成交: {rates.get('tp_given_fill', {}).get('mean')}  "
@@ -363,6 +393,18 @@ def main(argv: list[str] | None = None) -> int:
                     )
                     print(f"  counts: {item.get('counts')}")
                     print(f"  → {item.get('hint')}")
+                scans = report.get("parameter_scan") or {}
+                for kind, sc in scans.items():
+                    print()
+                    print(f"【参数扫描 {kind}】稳定性={sc.get('stability')}  "
+                          f"tp={sc.get('tp_mean_avg')}±{sc.get('tp_mean_std')}")
+                    print(f"  {sc.get('note')}")
+                    if sc.get("best"):
+                        b = sc["best"]
+                        print(
+                            f"  较优网格: window={b.get('window')} σ={b.get('width')} "
+                            f"edge={b.get('edge')}"
+                        )
                 print()
                 print("声明: 单票短样本回放，不是未来胜率。")
             return 0
