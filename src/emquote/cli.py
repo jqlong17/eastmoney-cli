@@ -12,7 +12,7 @@ from typing import Any
 from .client import EastMoneyClient, QuoteError
 from .levels import parse_channels, suggest_condition_orders
 from .plotting import plot_close_curve, print_condition_levels
-from .plot_cli import main_channel, main_pv
+from .plot_cli import main_channel, main_daily, main_intraday, main_kline, main_pv
 
 
 def _print_quote(q: dict[str, Any]) -> None:
@@ -145,6 +145,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="【AI 推荐】价量通道图 CLI 别名 → 同 emplot-pv",
         add_help=False,
     )
+    sub.add_parser(
+        "plot-kline",
+        help="【AI 推荐】K线蜡烛图 CLI 别名 → 同 emplot-kline",
+        add_help=False,
+    )
+    sub.add_parser(
+        "plot-daily",
+        help="【AI 推荐】日线趋势图 CLI 别名 → 同 emplot-daily",
+        add_help=False,
+    )
+    sub.add_parser(
+        "plot-intraday",
+        help="【AI 推荐】分时图 CLI 别名 → 同 emplot-intraday",
+        add_help=False,
+    )
 
     pl = sub.add_parser(
         "levels",
@@ -163,6 +178,12 @@ def main(argv: list[str] | None = None) -> int:
         return main_channel(argv[1:])
     if argv and argv[0] == "plot-pv":
         return main_pv(argv[1:])
+    if argv and argv[0] == "plot-kline":
+        return main_kline(argv[1:])
+    if argv and argv[0] == "plot-daily":
+        return main_daily(argv[1:])
+    if argv and argv[0] == "plot-intraday":
+        return main_intraday(argv[1:])
 
     args = build_parser().parse_args(argv)
     client = EastMoneyClient(timeout=args.timeout, retries=args.retries)

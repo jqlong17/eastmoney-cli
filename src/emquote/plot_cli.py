@@ -1,7 +1,13 @@
-"""两个面向 AI/脚本调用的画图 CLI。
+"""面向 AI/脚本调用的画图 CLI。
 
-- emplot-channel：价格通道图（回归 + Donchian）+ 条件单价
-- emplot-pv：价量通道图（价量加权回归 + Donchian）+ 条件单价 + 触轨放量
+通道图：
+- emplot-channel：价格通道（回归 + Donchian）+ 条件单价
+- emplot-pv：价量通道（价量加权回归 + Donchian）+ 条件单价 + 触轨放量
+
+分析图：
+- emplot-kline：蜡烛 K 线 + MA
+- emplot-daily：日线趋势 + MA5/10/20/60
+- emplot-intraday：分时 + VWAP + 昨收
 
 刻意参数少、默认值固定，方便 agent 直接调用。
 """
@@ -175,3 +181,167 @@ def main_pv(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main_channel())
+
+
+# --- 分析图预设（K线 / 日线 / 分时）---
+CHART_PRESETS: dict[str, dict[str, Any]] = {
+    "kline": {
+        "title": "K线蜡烛图",
+        "default_interval": "5m",
+        "default_days": 10,
+        "default_output": "emquote-kline.png",
+        "ma": [5, 10, 20],
+        "help": "OHLC 蜡烛 + 成交量 + MA5/10/20，看短线形态",
+    },
+    "daily": {
+        "title": "日线趋势图",
+        "default_interval": "1d",
+        "default_days": 120,
+        "default_output": "emquote-daily.png",
+        "ma": [5, 10, 20, 60],
+        "help": "日线蜡烛 + MA5/10/20/60 + 成交量，看大方向",
+    },
+    "intraday": {
+        "title": "分时图",
+        "default_interval": "1m",
+        "default_days": 2,
+        "default_output": "emquote-intraday.png",
+        "ma": [],
+        "help": "最新交易日分时价 + VWAP + 昨收 + 成交量",
+    },
+}
+
+
+def _chart_default_output(preset: str, symbol: str | None) -> str:
+    base = CHART_PRESETS[preset]["default_output"]
+    if not symbol:
+        return base
+    code = symbol.split(".")[0].replace("/", "-")
+    stem = Path(base).stem
+    return f"{code}-{stem.replace('emquote-', '')}.png"
+
+
+def _build_chart_parser(preset: str) -> argparse.ArgumentParser:
+    meta = CHART_PRESETS[preset]
+    prog = {"kline": "emplot-kline", "daily": "emplot-daily", "intraday": "emplot-intraday"}[preset]
+    p = argparse.ArgumentParser(
+        prog=prog,
+        description=f"{meta['title']}：{meta['help']}。只读研究，不下单。",
+    )
+    p.add_argument(
+        "symbol",
+        nargs="?",
+        default=None,
+        help="股票代码，如 603606.SH；使用 --from-json 时可省略",
+    )
+    p.add_argument("-o", "--output", default=None, help="输出 PNG 路径（默认按代码自动命名）")
+    p.add_argument(
+        "-i",
+        "--interval",
+        default=meta["default_interval"],
+        help=f"K 线周期，默认 {meta['default_interval']}",
+    )
+    p.add_argument(
+        "--days",
+        type=int,
+        default=meta["default_days"],
+        help=f"最近 N 个交易日，默认 {meta['default_days']}",
+    )
+    p.add_argument("--bars", type=int, default=None, help="只保留最近 N 根")
+    p.add_argument("--adjust", choices=["none", "qfq", "hfq"], default="none", help="复权")
+    p.add_argument("--from-json", dest="from_json", help="离线读取东财原始 JSON")
+    p.add_argument(
+        "--ma",
+        default=None,
+        help="均线窗口，逗号分隔；kline 默认 5,10,20；daily 默认 5,10,20,60；intraday 忽略",
+    )
+    p.add_argument(
+        "--pre-close",
+        type=float,
+        default=None,
+        help="分时昨收（不传则自动用上一根收盘近似）",
+    )
+    p.add_argument(
+        "--json",
+        action="store_true",
+        help="额外把摘要 JSON 打到 stdout（便于 AI 解析）",
+    )
+    p.add_argument("--timeout", type=float, default=20.0, help="请求超时秒数")
+    p.add_argument("--retries", type=int, default=3, help="每主机重试次数")
+    return p
+
+
+def _parse_ma(raw: str | None, default: list[int]) -> list[int]:
+    if raw is None or raw.strip() == "":
+        return list(default)
+    if raw.strip().lower() in {"none", "off", "0"}:
+        return []
+    out: list[int] = []
+    for part in raw.replace("，", ",").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        out.append(int(part))
+    return out
+
+
+def _run_chart(preset: str, argv: list[str] | None = None) -> int:
+    from .charts import plot_candles, plot_daily, plot_intraday
+
+    meta = CHART_PRESETS[preset]
+    args = _build_chart_parser(preset).parse_args(argv)
+    client = EastMoneyClient(timeout=args.timeout, retries=args.retries)
+
+    try:
+        k = _load_kline(client, args)
+        out = args.output or _chart_default_output(preset, args.symbol or k.get("symbol"))
+        ma = _parse_ma(args.ma, list(meta["ma"]))
+
+        if preset == "kline":
+            path = plot_candles(k, out, ma=ma)
+        elif preset == "daily":
+            path = plot_daily(k, out, ma=ma)
+        else:
+            path = plot_intraday(k, out, pre_close=args.pre_close)
+
+        bars = k.get("bars") or []
+        last = bars[-1] if bars else {}
+        summary = {
+            "preset": preset,
+            "title": meta["title"],
+            "output": str(path),
+            "symbol": k.get("symbol"),
+            "name": k.get("name"),
+            "interval": k.get("interval"),
+            "bars": len(bars),
+            "last_time": last.get("time"),
+            "last_close": last.get("close"),
+            "ma": ma if preset != "intraday" else [],
+        }
+        if args.json:
+            print(json.dumps(summary, ensure_ascii=False, indent=2))
+        else:
+            print(f"[{meta['title']}] 已保存: {path}")
+            print(
+                f"{k.get('name')} {k.get('symbol')}  {k.get('interval')}  "
+                f"bars={len(bars)}  last={last.get('close')}"
+            )
+        return 0
+    except (QuoteError, ValueError, RuntimeError, OSError, json.JSONDecodeError) as exc:
+        print(f"失败: {exc}", file=sys.stderr)
+        return 1
+
+
+def main_kline(argv: list[str] | None = None) -> int:
+    """emplot-kline 入口。"""
+    return _run_chart("kline", argv)
+
+
+def main_daily(argv: list[str] | None = None) -> int:
+    """emplot-daily 入口。"""
+    return _run_chart("daily", argv)
+
+
+def main_intraday(argv: list[str] | None = None) -> int:
+    """emplot-intraday 入口。"""
+    return _run_chart("intraday", argv)

@@ -21,29 +21,39 @@ pip install -e '.[plot]'
 emquote --help
 ```
 
-## 给 AI / 脚本调用的两个画图 CLI
+## 给 AI / 脚本调用的画图 CLI
 
-安装 `.[plot]` 后提供两个**独立命令**（参数少、预设固定，适合 agent 直接调用）：
+安装 `.[plot]` 后提供五个**独立命令**（参数少、预设固定，适合 agent 直接调用）：
 
-| 命令 | 画什么 | 默认通道 |
+| 命令 | 画什么 | 默认 |
 |---|---|---|
-| `emplot-channel` | 价格通道图 + 条件单买/卖/止损 | `reg,donchian` |
-| `emplot-pv` | 价量通道图 + 量均线/触轨放量 + 条件单 | `vwreg,donchian` |
+| `emplot-channel` | 价格通道图 + 条件单买/卖/止损 | 通道 `reg,donchian`，5m×10日 |
+| `emplot-pv` | 价量通道图 + 量均线/触轨放量 + 条件单 | 通道 `vwreg,donchian`，5m×10日 |
+| `emplot-kline` | K 线蜡烛图 + MA5/10/20 + 成交量 | 5m×10日 |
+| `emplot-daily` | 日线趋势 + MA5/10/20/60 + 成交量 | 1d×120日 |
+| `emplot-intraday` | 分时价 + VWAP + 昨收 + 成交量 | 1m×最近交易日 |
 
 ```bash
 # 在线
 emplot-channel 603606.SH -o channel.png
 emplot-pv 603606.SH -o price-volume.png
+emplot-kline 603606.SH -o kline.png
+emplot-daily 603606.SH -o daily.png
+emplot-intraday 603606.SH -o intraday.png
 
 # 离线样例
 emplot-channel --from-json examples/sample-603606-5m.json --days 10 -o channel.png
 emplot-pv --from-json examples/sample-603606-5m.json --days 10 -o price-volume.png
+emplot-kline --from-json examples/sample-603606-5m.json --days 10 -o kline.png
+emplot-daily --from-json examples/sample-603606-1d.json -o daily.png
+emplot-intraday --from-json examples/sample-603606-5m.json -o intraday.png
 
-# AI 友好：JSON 输出条件单价（图仍会保存）
-emplot-pv 603606.SH -o out.png --json
+# AI 友好：JSON 摘要（图仍会保存）
+emplot-daily 603606.SH -o out.png --json
 ```
 
-也可写成子命令：`emquote plot-channel ...` / `emquote plot-pv ...`（与上面两个入口等价）。
+也可写成子命令：`emquote plot-channel|plot-pv|plot-kline|plot-daily|plot-intraday ...`。
+
 
 ## 常用命令
 
@@ -82,13 +92,28 @@ emplot-pv --from-json examples/sample-603606-5m.json --days 10 \
   -o examples/demo-603606-5m-price-volume.png
 ```
 
-示例图（价格通道 · `emplot-channel`）：
+示例图：
 
-![东方电缆 5 分钟收盘价（近 10 日）](examples/demo-603606-5m-10d.png)
+价格通道（`emplot-channel`）：
 
-示例图（价量通道 · `emplot-pv`）：
+![东方电缆 5 分钟价格通道](examples/demo-603606-5m-10d.png)
 
-![东方电缆 5 分钟价量通道（近 10 日）](examples/demo-603606-5m-price-volume.png)
+价量通道（`emplot-pv`）：
+
+![东方电缆 5 分钟价量通道](examples/demo-603606-5m-price-volume.png)
+
+K 线蜡烛（`emplot-kline`）：
+
+![东方电缆 5 分钟 K 线](examples/demo-603606-kline.png)
+
+日线趋势（`emplot-daily`）：
+
+![东方电缆 日线](examples/demo-603606-daily.png)
+
+分时（`emplot-intraday`）：
+
+![东方电缆 分时](examples/demo-603606-intraday.png)
+
 
 ## 发到 GitHub，建议具备的基础能力
 
@@ -98,6 +123,9 @@ emplot-pv --from-json examples/sample-603606-5m.json --days 10 \
 | `kline` 多周期 | ✅ | 含「最近 N 日 × 5 分钟」 |
 | `emplot-channel` | ✅ | 价格通道图独立 CLI（AI 调用） |
 | `emplot-pv` | ✅ | 价量通道图独立 CLI（AI 调用） |
+| `emplot-kline` | ✅ | K 线蜡烛图独立 CLI（AI 调用） |
+| `emplot-daily` | ✅ | 日线均线趋势独立 CLI（AI 调用） |
+| `emplot-intraday` | ✅ | 分时图独立 CLI（AI 调用） |
 | `plot` 价格/成交量图 | ✅ | 上价格、下成交量；可叠加 reg/vwreg/donchian/hl |
 | `levels` 条件单参考价 | ✅ | 给出买入/卖出/止损触价，人工录入东财 |
 | JSON / CSV | ✅ | 方便接 pandas / 其它脚本 |
