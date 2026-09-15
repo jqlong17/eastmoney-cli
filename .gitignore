@@ -21,3 +21,5 @@ venv/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+# emquote local cache (if created under repo)
+.cache/

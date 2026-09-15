@@ -11,6 +11,7 @@ from typing import Any
 
 from .client import EastMoneyClient, QuoteError
 from .levels import parse_channels, suggest_condition_orders
+from .plan import build_condition_plan, print_condition_plan
 from .plotting import plot_close_curve, print_condition_levels
 from .plot_cli import main_channel, main_daily, main_intraday, main_kline, main_pv
 
@@ -70,6 +71,16 @@ def _add_kline_fetch_args(sp: argparse.ArgumentParser) -> None:
     sp.add_argument("--bars", type=int, default=None, help="只保留最近 N 根")
     sp.add_argument("--adjust", choices=["none", "qfq", "hfq"], default="none", help="复权")
     sp.add_argument("--from-json", dest="from_json", help="离线读取东财原始 JSON")
+    sp.add_argument(
+        "--refresh",
+        action="store_true",
+        help="忽略本地 K 线缓存，强制向东财重新拉取",
+    )
+    sp.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="禁用 K 线本地缓存（成功也不写入，失败不回退）",
+    )
 
 
 def _add_channel_args(sp: argparse.ArgumentParser, *, default: str) -> None:
@@ -108,13 +119,15 @@ def _fetch_kline(client: EastMoneyClient, args: argparse.Namespace) -> dict[str,
         days=args.days,
         bars=args.bars,
         adjust=args.adjust,
+        use_cache=not getattr(args, "no_cache", False),
+        refresh=bool(getattr(args, "refresh", False)),
     )
 
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="emquote",
-        description="东方财富公开行情只读 CLI：报价 / K 线 / 画图 / 条件单参考价。非交易接口。",
+        description="东方财富公开行情只读 CLI：报价 / K 线 / 画图 / 波段条件单方案。服务几天到几周、用条件单代替盯盘；非交易接口。",
     )
     p.add_argument("--timeout", type=float, default=20.0, help="单次请求超时秒数")
     p.add_argument("--retries", type=int, default=3, help="每主机重试次数")
@@ -166,8 +179,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="根据通道给出东方财富条件单买入/卖出参考价（只打印，不下单）",
     )
     _add_kline_fetch_args(pl)
-    _add_channel_args(pl, default="reg,donchian")
+    _add_channel_args(pl, default="vwreg,donchian")
     pl.add_argument("--json", action="store_true", help="输出 JSON")
+
+    ppn = sub.add_parser(
+        "plan",
+        help="输出标准化波段条件单方案：买入区/止盈/止损/有效期/失效条件（不下单）",
+    )
+    _add_kline_fetch_args(ppn)
+    _add_channel_args(ppn, default="vwreg,donchian")
+    ppn.add_argument("--json", action="store_true", help="输出 JSON")
     return p
 
 
@@ -249,6 +270,23 @@ def main(argv: list[str] | None = None) -> int:
                 _emit_json(report)
             else:
                 print_condition_levels(report)
+            return 0
+
+        if args.cmd == "plan":
+            k = _fetch_kline(client, args)
+            kinds = parse_channels(args.channel)
+            plan = build_condition_plan(
+                k,
+                channels=kinds,
+                channel_window=args.channel_window,
+                channel_width=args.channel_width,
+                full_range=not args.single_window,
+            )
+            if args.json:
+                # JSON 里去掉嵌套 levels 的冗余大字段可保留；便于 AI
+                _emit_json(plan)
+            else:
+                print_condition_plan(plan)
             return 0
 
     except (QuoteError, ValueError, RuntimeError) as exc:

@@ -9,6 +9,12 @@ from typing import Any
 
 import requests
 
+from .cache import (
+    cache_key,
+    cache_ttl_seconds,
+    read_kline_cache,
+    write_kline_cache,
+)
 from .symbols import SymbolError, parse_symbol
 
 CST = timezone(timedelta(hours=8))
@@ -175,6 +181,9 @@ class EastMoneyClient:
         bars: int | None = None,
         adjust: str = "none",
         end: str | None = None,
+        use_cache: bool = True,
+        refresh: bool = False,
+        cache_ttl: int | None = None,
     ) -> dict[str, Any]:
         try:
             secid, code, market = parse_symbol(symbol)
@@ -187,6 +196,13 @@ class EastMoneyClient:
             )
         if adjust not in ADJUST_FQT:
             raise QuoteError("复权参数仅支持 none / qfq / hfq")
+
+        cache_id = cache_key(symbol, interval=key, adjust=adjust, days=days, bars=bars)
+        ttl = cache_ttl_seconds(key) if cache_ttl is None else cache_ttl
+        if use_cache and not refresh:
+            cached = read_kline_cache(cache_id, max_age=float(ttl))
+            if cached is not None:
+                return cached
 
         now = datetime.now(tz=CST)
         end_s = end or now.strftime("%Y%m%d")
@@ -207,7 +223,16 @@ class EastMoneyClient:
             "beg": beg_s,
             "end": end_s,
         }
-        payload, url = self._get_json(KLINE_URLS, params)
+        try:
+            payload, url = self._get_json(KLINE_URLS, params)
+        except QuoteError:
+            if use_cache:
+                stale = read_kline_cache(cache_id, max_age=None)
+                if stale is not None:
+                    stale = dict(stale)
+                    stale["source"] = f"cache-stale:{stale.get('source')}"
+                    return stale
+            raise
         data = payload.get("data") or {}
         raw = data.get("klines") or []
         rows = [_parse_kline_row(item) for item in raw]
@@ -219,7 +244,7 @@ class EastMoneyClient:
         if bars is not None and bars > 0:
             rows = rows[-bars:]
 
-        return {
+        result = {
             "secid": secid,
             "symbol": f"{code}.{market}",
             "code": str(data.get("code") or code),
@@ -229,6 +254,12 @@ class EastMoneyClient:
             "source": url,
             "bars": rows,
         }
+        if use_cache:
+            try:
+                write_kline_cache(cache_id, result)
+            except OSError:
+                pass
+        return result
 
     @staticmethod
     def kline_from_payload(

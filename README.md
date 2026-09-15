@@ -2,8 +2,10 @@
 
 独立小工具：调用东方财富网站公开 HTTP 接口（与 [AKShare](https://github.com/akfamily/akshare) 同类），拉取 A 股**报价 / K 线**，并可画出**价格 + 成交量 + 多通道**，以及**条件单买卖参考价**（人工录入东财，工具不下单）。
 
+- **产品定位**：服务**几天到几周**的波段；给上班没空盯盘的人算好**条件单**参考价（人工录入东财）。
+- **不做超短/打板**，分时图仅辅证，不是设单主依据。
 - **只读研究**。无下单、无券商登录。
-- **非官方**，无 SLA；节点可能限流或短暂断连。
+- **非官方**，无 SLA；节点可能限流或短暂断连。K 线默认写本地缓存（`~/.cache/emquote/kline/`），断线时可回退。
 - **不是** Choice / OpenAPI（官方量化接口需付费终端：[quantapi.eastmoney.com](https://quantapi.eastmoney.com/)）。
 
 ## 安装
@@ -23,17 +25,18 @@ emquote --help
 
 
 
-## Cursor Skill：中短线看盘
+## Cursor Skill：上班族波段条件单
 
 仓库内置 Agent Skill：`.cursor/skills/ashare-swing/`。
 
-用户提到股票代码/炒股/中短线/条件单时，Agent 应：
+面向**几天到几周、用条件单代替盯盘**的场景（不做超短/打板）。用户提到股票/波段/条件单时，Agent 应：
 
 1. 运行 `python .cursor/skills/ashare-swing/scripts/swing_brief.py <代码> -o /tmp/swing-xxx`
-2. 读图 + `levels` 参考价
-3. 按 skill 模板输出**中短线**研究备注（非投资建议、不下单）
+2. 读主图（日线 / 5m K 线 / 价量通道）+ `emquote plan`
+3. 输出标准化方案：买入区、止盈、止损、建议有效期（约 3～10 个交易日）、失效条件
 
-K 线节点不可用时加 `--demo`，或依赖脚本自动回退 `examples/sample-*.json`。
+分时默认不画；需要时再加 `--with-intraday`（仅辅图）。K 线节点不稳时用 `--demo` 或依赖缓存/样例回退。
+
 
 ## 给 AI / 脚本调用的画图 CLI
 
@@ -46,7 +49,7 @@ K 线节点不可用时加 `--demo`，或依赖脚本自动回退 `examples/samp
 | `emplot-pv` | 价量通道图 + 量均线/触轨放量 + 条件单 | 通道 `vwreg,donchian`，5m×10日 |
 | `emplot-kline` | K 线蜡烛图 + MA5/10/20 + 成交量 | 5m×10日 |
 | `emplot-daily` | 日线趋势 + MA5/10/20/60 + 成交量 | 1d×120日 |
-| `emplot-intraday` | 分时价 + VWAP + 昨收 + 成交量 | 1m×最近交易日 |
+| `emplot-intraday` | 分时辅图（可选，非设单主依据） | 1m×最近交易日 |
 
 ```bash
 # 在线
@@ -73,6 +76,9 @@ emplot-daily 603606.SH -o out.png --json
 ## 常用命令
 
 ```bash
+# 波段条件单方案（买入区/止盈/止损/有效期/失效条件）
+emquote plan 603606.SH -i 5m --days 10 --channel vwreg,donchian
+
 # 实时报价
 emquote quote 603606.SH
 emquote quote 002223.SZ --json
@@ -140,16 +146,17 @@ K 线蜡烛（`emplot-kline`）：
 | `emplot-pv` | ✅ | 价量通道图独立 CLI（AI 调用） |
 | `emplot-kline` | ✅ | K 线蜡烛图独立 CLI（AI 调用） |
 | `emplot-daily` | ✅ | 日线均线趋势独立 CLI（AI 调用） |
-| `emplot-intraday` | ✅ | 分时图独立 CLI（AI 调用） |
+| `emplot-intraday` | 分时辅图（可选，非设单主依据） | 1m×最近交易日 |
 | `plot` 价格/成交量图 | ✅ | 上价格、下成交量；可叠加 reg/vwreg/donchian/hl |
 | `levels` 条件单参考价 | ✅ | 给出买入/卖出/止损触价，人工录入东财 |
+| `plan` 条件单方案 | ✅ | 买入区/止盈/止损 + 有效期 + 失效条件（波段设单） |
+| K 线本地缓存 | ✅ | `~/.cache/emquote/kline/`，断线可回退；`--refresh` 强刷 |
 | `ashare-swing` Skill | ✅ | Cursor 中短线看盘：出图 + 条件单价 + 研究备注 |
 | JSON / CSV | ✅ | 方便接 pandas / 其它脚本 |
 | 多主机 + 重试 | ✅ | `push2` / `push2delay` / `push2his*` |
 | `pip install` 入口 | ✅ | 控制台命令 `emquote` |
 | 中文 README + MIT | ✅ | 写清非官方 / 只读 / 限流 |
 | 名称搜索 / 自选批量 | 暂不做 | 需要时再加，避免一上来做重 |
-| 本地行情缓存 | 暂不做 | 需要时再加；勿缓存任何密钥 |
 
 ## 接口
 

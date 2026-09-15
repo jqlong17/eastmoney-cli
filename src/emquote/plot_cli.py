@@ -73,6 +73,8 @@ def _build_parser(preset: str) -> argparse.ArgumentParser:
     p.add_argument("--bars", type=int, default=None, help="只保留最近 N 根")
     p.add_argument("--adjust", choices=["none", "qfq", "hfq"], default="none", help="复权")
     p.add_argument("--from-json", dest="from_json", help="离线读取东财原始 JSON")
+    p.add_argument("--refresh", action="store_true", help="忽略本地 K 线缓存，强制重拉")
+    p.add_argument("--no-cache", action="store_true", help="禁用 K 线本地缓存")
     p.add_argument(
         "--channel-window",
         type=int,
@@ -109,6 +111,8 @@ def _load_kline(client: EastMoneyClient, args: argparse.Namespace) -> dict[str, 
         days=args.days,
         bars=args.bars,
         adjust=args.adjust,
+        use_cache=not getattr(args, "no_cache", False),
+        refresh=bool(getattr(args, "refresh", False)),
     )
 
 
@@ -250,6 +254,8 @@ def _build_chart_parser(preset: str) -> argparse.ArgumentParser:
     p.add_argument("--bars", type=int, default=None, help="只保留最近 N 根")
     p.add_argument("--adjust", choices=["none", "qfq", "hfq"], default="none", help="复权")
     p.add_argument("--from-json", dest="from_json", help="离线读取东财原始 JSON")
+    p.add_argument("--refresh", action="store_true", help="忽略本地 K 线缓存，强制重拉")
+    p.add_argument("--no-cache", action="store_true", help="禁用 K 线本地缓存")
     p.add_argument(
         "--ma",
         default=None,
