@@ -75,7 +75,7 @@ def _add_channel_args(sp: argparse.ArgumentParser, *, default: str) -> None:
     sp.add_argument(
         "--channel",
         default=default,
-        help="通道：none/reg/donchian/hl，可组合如 reg,donchian 或 reg+hl",
+        help="通道：none/reg/vwreg/donchian/hl，可组合如 vwreg,donchian 或 reg+hl",
     )
     sp.add_argument(
         "--channel-window",

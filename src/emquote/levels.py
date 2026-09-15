@@ -10,6 +10,10 @@ CHANNEL_ALIASES = {
     "reg": "reg",
     "regression": "reg",
     "linreg": "reg",
+    "vwreg": "vwreg",
+    "vw": "vwreg",
+    "vwlinreg": "vwreg",
+    "volreg": "vwreg",
     "donchian": "donchian",
     "dc": "donchian",
     "hl": "hl",
@@ -19,6 +23,7 @@ CHANNEL_ALIASES = {
 
 CHANNEL_COLORS = {
     "reg": "#1f4e79",
+    "vwreg": "#0b6e4f",
     "donchian": "#8b5a2b",
     "hl": "#6a1b9a",
 }
@@ -34,7 +39,8 @@ def parse_channels(spec: str) -> list[str]:
     for part in parts:
         if part not in CHANNEL_ALIASES:
             raise ValueError(
-                f"未知通道 {part!r}，可选 none/reg/donchian/hl（可组合，如 reg,donchian）"
+                f"未知通道 {part!r}，可选 none/reg/vwreg/donchian/hl"
+                "（可组合，如 vwreg,donchian）"
             )
         kind = CHANNEL_ALIASES[part]
         if kind == "none":
@@ -67,6 +73,38 @@ def _linreg_channel(
     mid = [intercept + slope * x for x in xs]
     resid = [y - m for y, m in zip(closes, mid)]
     std = (sum(r * r for r in resid) / max(n - 1, 1)) ** 0.5
+    upper = [m + width * std for m in mid]
+    lower = [m - width * std for m in mid]
+    return mid, upper, lower
+
+
+def _vw_linreg_channel(
+    closes: list[float],
+    volumes: list[float],
+    *,
+    width: float = 2.0,
+) -> tuple[list[float], list[float], list[float]]:
+    """成交量加权线性回归通道：放量 K 线对中轴/带宽影响更大。"""
+    n = len(closes)
+    if n < 3:
+        return closes[:], closes[:], closes[:]
+    if len(volumes) != n:
+        return _linreg_channel(closes, width=width)
+
+    # 用 sqrt(volume) 缓和极端放量；零量给极小权重避免退化。
+    weights = [max((max(0.0, float(v)) ** 0.5), 1e-6) for v in volumes]
+    w_sum = sum(weights) or float(n)
+    xs = list(range(n))
+    x_mean = sum(w * x for w, x in zip(weights, xs)) / w_sum
+    y_mean = sum(w * y for w, y in zip(weights, closes)) / w_sum
+    num = sum(w * (x - x_mean) * (y - y_mean) for w, x, y in zip(weights, xs, closes))
+    den = sum(w * (x - x_mean) ** 2 for w, x in zip(weights, xs)) or 1.0
+    slope = num / den
+    intercept = y_mean - slope * x_mean
+    mid = [intercept + slope * x for x in xs]
+    resid = [y - m for y, m in zip(closes, mid)]
+    var = sum(w * r * r for w, r in zip(weights, resid)) / max(w_sum - 1.0, 1.0)
+    std = var ** 0.5
     upper = [m + width * std for m in mid]
     lower = [m - width * std for m in mid]
     return mid, upper, lower
@@ -158,10 +196,14 @@ def _channel_on_slice(
     segment_index: int,
 ) -> dict[str, Any]:
     closes = [float(b["close"]) for b in bars]
+    volumes = [float(b.get("volume") or 0) for b in bars]
     n = len(bars)
     if kind == "reg":
         mid_s, up_s, lo_s = _linreg_channel(closes, width=width)
         label = f"回归±{width:g}σ"
+    elif kind == "vwreg":
+        mid_s, up_s, lo_s = _vw_linreg_channel(closes, volumes, width=width)
+        label = f"价量回归±{width:g}σ"
     elif kind == "donchian":
         mid_s, up_s, lo_s = _donchian_channel(bars, window=n)
         label = f"Donchian({n})"
@@ -286,6 +328,23 @@ def _suggestion_from_rails(
             "用途": "防守止损（可选）",
             "建议触发价": round_price(lower - pad),
             "说明": "下轨再下方一点；跌破可能趋势转弱",
+        }
+    elif kind == "vwreg":
+        style = "价量回归·放量确认"
+        buy = {
+            "用途": "放量回踩买入（触价）",
+            "建议触发价": lower,
+            "说明": "价量加权下轨；宜配合放量/缩量回踩观察，条件单「价格小于等于」",
+        }
+        sell = {
+            "用途": "放量冲高卖出（触价）",
+            "建议触发价": upper,
+            "说明": "价量加权上轨；宜关注上轨附近放量滞涨，条件单「价格大于等于」",
+        }
+        stop = {
+            "用途": "放量跌破止损（可选）",
+            "建议触发价": round_price(lower - pad),
+            "说明": "下轨下方；若伴随放量跌破，防守意义更强",
         }
     elif kind == "donchian":
         style = "Donchian·突破/跌破"

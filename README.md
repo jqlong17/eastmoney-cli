@@ -33,14 +33,15 @@ emquote kline 603606.SH -i 5m --days 10
 emquote kline 603606.SH -i 5m --days 10 --csv > bars.csv
 emquote kline 603606.SH -i 1d --days 30
 
-# 画图：上价格下成交量；可叠加多种通道（reg / donchian / hl）
+# 画图：上价格下成交量；可叠加多种通道（reg / vwreg / donchian / hl）
+# vwreg = 成交量加权回归通道（同时考虑价格与量）
 # 短线窗口可收窄到约 1～2 日（5 分钟约 48/96 根）
-emquote plot 603606.SH -i 5m --days 10 --channel reg,donchian --channel-window 96 -o out.png
+emquote plot 603606.SH -i 5m --days 10 --channel vwreg,donchian --channel-window 96 -o out.png
 # 默认按窗口自动切成多段覆盖全时段，并把条件单买/卖/止损画在图上
 # 若只要最近一段：加 --single-window
 
 # 条件单参考价：打印买入/卖出/止损触价，便于抄到东方财富条件单（不下单）
-emquote levels 603606.SH -i 5m --days 10 --channel reg,donchian --channel-window 96
+emquote levels 603606.SH -i 5m --days 10 --channel vwreg,donchian --channel-window 96
 ```
 
 周期：`1m` `5m` `15m` `30m` `60m` `1d` `1w` `1mo`。  
@@ -52,11 +53,18 @@ emquote levels 603606.SH -i 5m --days 10 --channel reg,donchian --channel-window
 ```bash
 emquote kline --from-json examples/sample-603606-5m.json --days 10
 emquote plot --from-json examples/sample-603606-5m.json --days 10 -o demo.png
+emquote plot --from-json examples/sample-603606-5m.json --days 10 \
+  --channel vwreg,donchian --channel-window 96 \
+  -o examples/demo-603606-5m-price-volume.png
 ```
 
-示例图：
+示例图（价格通道）：
 
 ![东方电缆 5 分钟收盘价（近 10 日）](examples/demo-603606-5m-10d.png)
+
+示例图（价量加权通道 + 条件单参考价）：
+
+![东方电缆 5 分钟价量通道（近 10 日）](examples/demo-603606-5m-price-volume.png)
 
 ## 发到 GitHub，建议具备的基础能力
 
@@ -64,7 +72,7 @@ emquote plot --from-json examples/sample-603606-5m.json --days 10 -o demo.png
 |---|---|---|
 | `quote` 实时快照 | ✅ | 代码、名称、最新价、时间 |
 | `kline` 多周期 | ✅ | 含「最近 N 日 × 5 分钟」 |
-| `plot` 价格/成交量图 | ✅ | 上价格、下成交量；可叠加 reg/donchian/hl |
+| `plot` 价格/成交量图 | ✅ | 上价格、下成交量；可叠加 reg/vwreg/donchian/hl |
 | `levels` 条件单参考价 | ✅ | 给出买入/卖出/止损触价，人工录入东财 |
 | JSON / CSV | ✅ | 方便接 pandas / 其它脚本 |
 | 多主机 + 重试 | ✅ | `push2` / `push2delay` / `push2his*` |

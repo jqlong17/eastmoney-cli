@@ -84,16 +84,77 @@ def _draw_segments(ax: Any, xs: list[int], segments: list[dict[str, Any]], *, ki
     return f"{label}×{len(segments)}段"
 
 
+def _volume_ma(volumes: list[float], window: int = 20) -> list[float]:
+    n = len(volumes)
+    w = max(2, min(window, n))
+    out: list[float] = []
+    running = 0.0
+    for i, v in enumerate(volumes):
+        running += v
+        if i >= w:
+            running -= volumes[i - w]
+            out.append(running / w)
+        else:
+            out.append(running / (i + 1))
+    return out
+
+
+def _draw_volume_panel(
+    ax: Any,
+    xs: list[int],
+    volumes: list[float],
+    vol_colors: list[str],
+    *,
+    closes: list[float],
+    suggestion: dict[str, Any] | None,
+) -> None:
+    """成交量柱 + 均量线；高亮「触轨附近且放量」的 bar。"""
+    bar_w = 0.8 if len(xs) < 200 else 1.0
+    ax.bar(xs, volumes, width=bar_w, color=vol_colors, align="center", zorder=2)
+    ma = _volume_ma(volumes, window=20)
+    ax.plot(xs, ma, color="#264653", linewidth=1.0, label="量均线(20)", zorder=3)
+
+    if suggestion and closes:
+        buy_p = float(suggestion["buy_price"])
+        sell_p = float(suggestion["sell_price"])
+        band = max(abs(sell_p - buy_p) * 0.08, max(closes) * 0.0015, 0.02)
+        highlight_x: list[int] = []
+        highlight_y: list[float] = []
+        for i, (c, v, m) in enumerate(zip(closes, volumes, ma)):
+            near_rail = abs(c - buy_p) <= band or abs(c - sell_p) <= band
+            if near_rail and m > 0 and v >= 1.5 * m:
+                highlight_x.append(i)
+                highlight_y.append(v)
+        if highlight_x:
+            ax.scatter(
+                highlight_x,
+                highlight_y,
+                s=28,
+                color="#e9c46a",
+                edgecolors="#264653",
+                linewidths=0.6,
+                zorder=4,
+                label="触轨放量",
+            )
+
+    ax.set_ylabel("成交量")
+    ax.grid(True, axis="y", alpha=0.25)
+    ax.legend(loc="upper left", fontsize=7, framealpha=0.85)
+
+
 def _draw_condition_levels(ax: Any, suggestion: dict[str, Any], x_right: int) -> None:
     """把条件单买/卖/止损价画成醒目水平线。"""
     buy_p = float(suggestion["buy_price"])
     sell_p = float(suggestion["sell_price"])
     stop_p = float(suggestion["stop_price"])
+    mid_p = float(suggestion.get("last_mid") or 0)
     styles = [
         (buy_p, "#d62828", "条件单买入", 2.0),
         (sell_p, "#2a9d8f", "条件单卖出", 2.0),
         (stop_p, "#6c757d", "止损参考", 1.4),
     ]
+    if mid_p > 0:
+        styles.append((mid_p, "#457b9d", "中轴参考", 1.0))
     for price, color, name, lw in styles:
         ax.axhline(price, color=color, linewidth=lw, alpha=0.95, linestyle="-.", zorder=6)
         ax.annotate(
@@ -201,6 +262,11 @@ def plot_close_curve(
             f"{title}\n条件单参考  买 {primary_suggestion['buy_price']:.2f}  /  "
             f"卖 {primary_suggestion['sell_price']:.2f}  /  "
             f"止损 {primary_suggestion['stop_price']:.2f}"
+            + (
+                f"  /  中轴 {float(primary_suggestion['last_mid']):.2f}"
+                if primary_suggestion.get("last_mid")
+                else ""
+            )
         )
     ax_price.set_title(title, fontsize=11)
     ax_price.set_ylabel("价格")
@@ -208,10 +274,14 @@ def plot_close_curve(
     ax_price.tick_params(labelbottom=False)
     ax_price.legend(loc="upper left", fontsize=7, framealpha=0.85, ncol=2)
 
-    bar_w = 0.8 if len(xs) < 200 else 1.0
-    ax_vol.bar(xs, volumes, width=bar_w, color=vol_colors, align="center")
-    ax_vol.set_ylabel("成交量")
-    ax_vol.grid(True, axis="y", alpha=0.25)
+    _draw_volume_panel(
+        ax_vol,
+        xs,
+        volumes,
+        vol_colors,
+        closes=closes,
+        suggestion=primary_suggestion,
+    )
     ax_vol.set_xlim(0, max(len(xs) - 1, 0))
 
     tick_idxs = _pick_tick_indices(len(xs), target=8)
