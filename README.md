@@ -35,8 +35,12 @@ emquote kline 603606.SH -i 5m --days 10
 emquote kline 603606.SH -i 5m --days 10 --csv > bars.csv
 emquote kline 603606.SH -i 1d --days 30
 
-# 画最近 10 日 5 分钟收盘价曲线（横轴只排交易 bar，跳过午休/隔夜/周末）
+# 画最近 10 日 5 分钟：上价格下成交量；默认叠加线性回归直线通道
+# 短线可把通道窗口收窄到约 1～2 日（5 分钟约 48/96 根）
 emquote plot 603606.SH -i 5m --days 10 -o 603606-5m-10d.png
+emquote plot 603606.SH -i 5m --days 10 --channel reg --channel-window 96 -o out.png
+emquote plot 603606.SH -i 5m --days 10 --channel donchian --channel-window 48 -o out-dc.png
+emquote plot 603606.SH -i 5m --days 10 --channel none -o out-plain.png
 ```
 
 周期：`1m` `5m` `15m` `30m` `60m` `1d` `1w` `1mo`。  
@@ -60,7 +64,7 @@ emquote plot --from-json examples/sample-603606-5m.json --days 10 -o demo.png
 |---|---|---|
 | `quote` 实时快照 | ✅ | 代码、名称、最新价、时间 |
 | `kline` 多周期 | ✅ | 含「最近 N 日 × 5 分钟」 |
-| `plot` 价格/成交量图 | ✅ | 上价格、下成交量 PNG |
+| `plot` 价格/成交量图 | ✅ | 上价格、下成交量；可选回归直线通道 / Donchian |
 | JSON / CSV | ✅ | 方便接 pandas / 其它脚本 |
 | 多主机 + 重试 | ✅ | `push2` / `push2delay` / `push2his*` |
 | `pip install` 入口 | ✅ | 控制台命令 `emquote` |

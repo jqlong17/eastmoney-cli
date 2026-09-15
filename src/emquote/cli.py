@@ -84,7 +84,7 @@ def build_parser() -> argparse.ArgumentParser:
     pk.add_argument("--json", action="store_true", help="输出 JSON")
     pk.add_argument("--csv", action="store_true", help="输出 CSV 到 stdout")
 
-    pp = sub.add_parser("plot", help="绘制收盘价曲线并保存 PNG")
+    pp = sub.add_parser("plot", help="绘制价格/成交量图并保存 PNG")
     pp.add_argument("symbol", nargs="?", default=None, help="股票代码；使用 --from-json 时可省略")
     pp.add_argument("-i", "--interval", default="5m", help="周期，默认 5m")
     pp.add_argument("--days", type=int, default=10, help="最近 N 个交易日，默认 10")
@@ -92,6 +92,24 @@ def build_parser() -> argparse.ArgumentParser:
     pp.add_argument("--adjust", choices=["none", "qfq", "hfq"], default="none", help="复权")
     pp.add_argument("-o", "--output", default="emquote-chart.png", help="输出 PNG 路径")
     pp.add_argument("--from-json", dest="from_json", help="离线读取东财原始 JSON")
+    pp.add_argument(
+        "--channel",
+        choices=["none", "reg", "donchian"],
+        default="reg",
+        help="价格通道：none / reg(线性回归直线通道，默认) / donchian",
+    )
+    pp.add_argument(
+        "--channel-window",
+        type=int,
+        default=0,
+        help="通道计算窗口（根数）；0=用图上全部 bar。短线可试 48/96",
+    )
+    pp.add_argument(
+        "--channel-width",
+        type=float,
+        default=2.0,
+        help="回归通道宽度（残差标准差倍数），默认 2",
+    )
     return p
 
 
@@ -130,9 +148,18 @@ def main(argv: list[str] | None = None) -> int:
                     _print_kline(k)
                 return 0
 
-            path = plot_close_curve(k, args.output)
+            path = plot_close_curve(
+                k,
+                args.output,
+                channel=args.channel,
+                channel_window=args.channel_window,
+                channel_width=args.channel_width,
+            )
             print(f"已保存: {path}")
-            print(f"{k.get('name')} {k.get('symbol')}  {k.get('interval')}  bars={len(k['bars'])}")
+            print(
+                f"{k.get('name')} {k.get('symbol')}  {k.get('interval')}  "
+                f"bars={len(k['bars'])}  channel={args.channel}"
+            )
             return 0
     except QuoteError as exc:
         print(f"失败: {exc}", file=sys.stderr)
