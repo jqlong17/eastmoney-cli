@@ -68,6 +68,7 @@ def build_condition_plan(
     channel_window: int = 0,
     channel_width: float = 2.0,
     full_range: bool = True,
+    causal: bool = True,
     run_calibration: bool = True,
     with_param_scan: bool = False,
     capital: float | None = None,
@@ -83,6 +84,7 @@ def build_condition_plan(
         channel_window=channel_window,
         channel_width=channel_width,
         full_range=full_range,
+        causal=causal,
     )
     width_assessment = report.get("width_assessment") or {}
     energy_pack = compute_kinetic_energy(bars)

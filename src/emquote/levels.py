@@ -110,6 +110,64 @@ def _vw_linreg_channel(
     return mid, upper, lower
 
 
+def _linreg_channel_causal(
+    closes: list[float],
+    *,
+    width: float,
+    window: int,
+) -> tuple[list[float], list[float], list[float]]:
+    """滚动因果回归：第 i 根只用 closes[i-W+1 : i+1]，避免主升后视画进下跌段。"""
+    n = len(closes)
+    w = max(3, min(int(window), n))
+    mid: list[float] = []
+    upper: list[float] = []
+    lower: list[float] = []
+    for i in range(n):
+        lo = max(0, i - w + 1)
+        slice_c = closes[lo : i + 1]
+        if len(slice_c) < 3:
+            mid.append(closes[i])
+            upper.append(closes[i])
+            lower.append(closes[i])
+            continue
+        m, u, l = _linreg_channel(slice_c, width=width)
+        mid.append(m[-1])
+        upper.append(u[-1])
+        lower.append(l[-1])
+    return mid, upper, lower
+
+
+def _vw_linreg_channel_causal(
+    closes: list[float],
+    volumes: list[float],
+    *,
+    width: float,
+    window: int,
+) -> tuple[list[float], list[float], list[float]]:
+    """滚动因果价量回归：第 i 根只用当时及之前窗口。"""
+    n = len(closes)
+    if len(volumes) != n:
+        return _linreg_channel_causal(closes, width=width, window=window)
+    w = max(3, min(int(window), n))
+    mid: list[float] = []
+    upper: list[float] = []
+    lower: list[float] = []
+    for i in range(n):
+        lo = max(0, i - w + 1)
+        slice_c = closes[lo : i + 1]
+        slice_v = volumes[lo : i + 1]
+        if len(slice_c) < 3:
+            mid.append(closes[i])
+            upper.append(closes[i])
+            lower.append(closes[i])
+            continue
+        m, u, l = _vw_linreg_channel(slice_c, slice_v, width=width)
+        mid.append(m[-1])
+        upper.append(u[-1])
+        lower.append(l[-1])
+    return mid, upper, lower
+
+
 def _donchian_channel(
     bars: list[dict[str, Any]],
     *,
@@ -274,22 +332,43 @@ def _channel_on_slice(
     width: float,
     global_start: int,
     segment_index: int,
+    causal: bool = True,
+    lookback: int = 0,
 ) -> dict[str, Any]:
     closes = [float(b["close"]) for b in bars]
     volumes = [float(b.get("volume") or 0) for b in bars]
     n = len(bars)
+    w = lookback if lookback > 0 else n
+    w = max(3, min(w, n))
+
     if kind == "reg":
-        mid_s, up_s, lo_s = _linreg_channel(closes, width=width)
-        label = f"回归±{width:g}σ"
+        if causal:
+            mid_s, up_s, lo_s = _linreg_channel_causal(closes, width=width, window=w)
+            label = f"因果回归±{width:g}σ(W={w})"
+        else:
+            mid_s, up_s, lo_s = _linreg_channel(closes, width=width)
+            label = f"回顾回归±{width:g}σ"
     elif kind == "vwreg":
-        mid_s, up_s, lo_s = _vw_linreg_channel(closes, volumes, width=width)
-        label = f"价量回归±{width:g}σ"
+        if causal:
+            mid_s, up_s, lo_s = _vw_linreg_channel_causal(
+                closes, volumes, width=width, window=w
+            )
+            label = f"因果价量回归±{width:g}σ(W={w})"
+        else:
+            mid_s, up_s, lo_s = _vw_linreg_channel(closes, volumes, width=width)
+            label = f"回顾价量回归±{width:g}σ"
     elif kind == "donchian":
-        mid_s, up_s, lo_s = _donchian_channel(bars, window=n)
-        label = f"Donchian({n})"
+        # Donchian 点态本就因果；固定 lookback，避免「整段最高」叙事误导
+        mid_s, up_s, lo_s = _donchian_channel(bars, window=w if causal else n)
+        label = f"Donchian({w if causal else n})"
     elif kind == "hl":
-        mid_s, up_s, lo_s = _hl_channel(bars)
-        label = f"高低区间/{n}"
+        if causal:
+            # 因果高低：滚动窗口高低，等同 Donchian 语义，避免全段后视箱体
+            mid_s, up_s, lo_s = _donchian_channel(bars, window=w)
+            label = f"滚动高低({w})"
+        else:
+            mid_s, up_s, lo_s = _hl_channel(bars)
+            label = f"高低区间/{n}"
     else:
         raise ValueError(f"未知通道: {kind}")
 
@@ -305,6 +384,8 @@ def _channel_on_slice(
         "start": global_start,
         "end": global_start + n,
         "segment_index": segment_index,
+        "causal": causal,
+        "lookback": w,
         "mid": mid_s,
         "upper": up_s,
         "lower": lo_s,
@@ -326,16 +407,50 @@ def compute_channel_segments(
     width: float = 2.0,
     interval: str = "5m",
     full_range: bool = True,
+    causal: bool = True,
 ) -> list[dict[str, Any]]:
     """计算通道。
 
-    full_range=True：自动分段覆盖全部时间；
-    full_range=False：仅最近一个 window（兼容旧行为）。
+    causal=True（默认）：滚动窗口，第 i 根只用当时及之前数据（图不再后视镜）。
+    causal=False：旧「段内全样本 OLS / 箱体」回顾拟合，仅作对比。
+
+    full_range=True：覆盖全部时间（因果时一条连续轨；回顾时自动分段）。
+    full_range=False：仅最近一个 window。
     """
     n = len(bars)
     if n < 3:
         raise ValueError("K 线不足 3 根，无法计算通道")
 
+    lookback = auto_segment_size(n, interval=interval, explicit=window)
+
+    if causal:
+        if not full_range:
+            use_n = n if window <= 0 else min(max(window, 8), n)
+            start = n - use_n
+            # 调用方已切好决策窗时：整窗拟合末点 ≡ 当时可算的轨（与 plan/calibrate 对齐）
+            lb = use_n if window <= 0 else min(window, use_n)
+            seg = _channel_on_slice(
+                bars[start:],
+                kind=kind,
+                width=width,
+                global_start=start,
+                segment_index=0,
+                causal=True,
+                lookback=lb,
+            )
+            return [seg]
+        seg = _channel_on_slice(
+            bars,
+            kind=kind,
+            width=width,
+            global_start=0,
+            segment_index=0,
+            causal=True,
+            lookback=lookback,
+        )
+        return [seg]
+
+    # —— 回顾拟合（旧行为）——
     if not full_range:
         use_n = n if window <= 0 else min(window, n)
         start = n - use_n
@@ -345,6 +460,8 @@ def compute_channel_segments(
             width=width,
             global_start=start,
             segment_index=0,
+            causal=False,
+            lookback=use_n,
         )
         return [seg]
 
@@ -360,6 +477,8 @@ def compute_channel_segments(
                 width=width,
                 global_start=start,
                 segment_index=idx,
+                causal=False,
+                lookback=end - start,
             )
         )
     return segments
@@ -373,6 +492,7 @@ def compute_channel(
     width: float = 2.0,
     interval: str = "5m",
     full_range: bool = True,
+    causal: bool = True,
 ) -> dict[str, Any]:
     """兼容旧接口：返回最后一段，并附带全部 segments。"""
     segments = compute_channel_segments(
@@ -382,12 +502,15 @@ def compute_channel(
         width=width,
         interval=interval,
         full_range=full_range,
+        causal=causal,
     )
     last = segments[-1]
+    multi = full_range and (not causal) and len(segments) > 1
     return {
         **last,
         "segments": segments,
-        "label": f"{last['label']}×{len(segments)}段" if full_range and len(segments) > 1 else last["label"],
+        "label": f"{last['label']}×{len(segments)}段" if multi else last["label"],
+        "fit_mode": "causal_rolling" if causal else "retrospective_segment",
     }
 
 
@@ -420,6 +543,7 @@ def compute_channel_width(
     width: float = 2.0,
     interval: str = "5m",
     full_range: bool = True,
+    causal: bool = True,
 ) -> dict[str, Any]:
     """通道宽度序列 + 确定性评估。
 
@@ -434,6 +558,7 @@ def compute_channel_width(
         width=width,
         interval=interval,
         full_range=full_range,
+        causal=causal,
     )
     segments = packed.get("segments") or [packed]
     n = len(bars)
@@ -632,6 +757,7 @@ def suggest_condition_orders(
     channel_window: int = 0,
     channel_width: float = 2.0,
     full_range: bool = True,
+    causal: bool = True,
 ) -> dict[str, Any]:
     """按通道轨位给出可填入东财条件单的参考价（研究用，不下单）。"""
     bars = kline.get("bars") or []
@@ -655,6 +781,7 @@ def suggest_condition_orders(
             width=channel_width,
             interval=str(kline.get("interval") or "5m"),
             full_range=full_range,
+            causal=causal,
         )
         item = _suggestion_from_rails(
             kind,
@@ -667,6 +794,7 @@ def suggest_condition_orders(
         item["last_width_pct"] = width_info["last_width_pct"]
         item["last_width_abs"] = width_info["last_width_abs"]
         item["certainty"] = width_info["certainty"]
+        item["fit_mode"] = "causal_rolling" if causal else "retrospective_segment"
         suggestions.append(item)
         width_reports.append(width_info)
 
@@ -679,8 +807,10 @@ def suggest_condition_orders(
         "interval": kline.get("interval") or "",
         "last_time": last.get("time"),
         "last_close": last_close,
+        "fit_mode": "causal_rolling" if causal else "retrospective_segment",
         "disclaimer": (
             "仅为基于公开行情通道的研究参考价，不是投资建议；"
+            "默认因果滚动通道（非后视镜段内拟合）；"
             "请人工录入东方财富条件单，本工具不下单、不连接交易。"
         ),
         "suggestions": suggestions,

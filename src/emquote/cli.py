@@ -102,7 +102,7 @@ def _add_channel_args(sp: argparse.ArgumentParser, *, default: str) -> None:
         "--channel-window",
         type=int,
         default=0,
-        help="分段长度（根数）。画全时段时自动切成多段；0=按周期自动估计（5m 约 1 日）",
+        help="因果滚动窗口（根数）。0=按周期自动估计（5m 约 1 日）；回顾模式下亦作分段长度",
     )
     sp.add_argument(
         "--channel-width",
@@ -113,7 +113,12 @@ def _add_channel_args(sp: argparse.ArgumentParser, *, default: str) -> None:
     sp.add_argument(
         "--single-window",
         action="store_true",
-        help="不切段，只画最近一个窗口的通道（旧行为）",
+        help="只使用最近一个窗口，不覆盖全时段",
+    )
+    sp.add_argument(
+        "--retrospective-channel",
+        action="store_true",
+        help="旧版段内全样本回顾拟合（后视镜）；默认因果滚动",
     )
 
 
@@ -289,6 +294,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.cmd == "plot":
             k = _fetch_kline(client, args)
             kinds = parse_channels(args.channel)
+            causal = not bool(getattr(args, "retrospective_channel", False))
             path = plot_close_curve(
                 k,
                 args.output,
@@ -297,11 +303,12 @@ def main(argv: list[str] | None = None) -> int:
                 channel_width=args.channel_width,
                 show_levels=not args.no_levels,
                 full_range=not args.single_window,
+                causal=causal,
             )
             print(f"已保存: {path}")
             print(
                 f"{k.get('name')} {k.get('symbol')}  {k.get('interval')}  "
-                f"bars={len(k['bars'])}  channel={','.join(kinds)}"
+                f"bars={len(k['bars'])}  channel={','.join(kinds)}  fit={'causal' if causal else 'retrospective'}"
             )
             if kinds != ["none"]:
                 report = suggest_condition_orders(
@@ -310,6 +317,7 @@ def main(argv: list[str] | None = None) -> int:
                     channel_window=args.channel_window,
                     channel_width=args.channel_width,
                     full_range=not args.single_window,
+                    causal=causal,
                 )
                 print()
                 print_condition_levels(report)
@@ -318,12 +326,14 @@ def main(argv: list[str] | None = None) -> int:
         if args.cmd == "levels":
             k = _fetch_kline(client, args)
             kinds = parse_channels(args.channel)
+            causal = not bool(getattr(args, "retrospective_channel", False))
             report = suggest_condition_orders(
                 k,
                 channels=kinds,
                 channel_window=args.channel_window,
                 channel_width=args.channel_width,
                 full_range=not args.single_window,
+                causal=causal,
             )
             if args.json:
                 _emit_json(report)
@@ -340,6 +350,7 @@ def main(argv: list[str] | None = None) -> int:
                 channel_window=args.channel_window,
                 channel_width=args.channel_width,
                 full_range=not args.single_window,
+                causal=not bool(getattr(args, "retrospective_channel", False)),
                 run_calibration=not bool(getattr(args, "no_calibrate", False)),
                 with_param_scan=bool(getattr(args, "scan", False)),
                 capital=getattr(args, "capital", None),

@@ -110,7 +110,12 @@ def _build_parser(preset: str) -> argparse.ArgumentParser:
         default=meta["channel_width"],
         help=f"回归带宽（σ 倍数），默认 {meta['channel_width']}",
     )
-    p.add_argument("--single-window", action="store_true", help="不切段，只画最近一段")
+    p.add_argument("--single-window", action="store_true", help="只画最近一个窗口（不覆盖全时段）")
+    p.add_argument(
+        "--retrospective-channel",
+        action="store_true",
+        help="使用旧的段内全样本回顾拟合（后视镜）；默认改为因果滚动通道",
+    )
     p.add_argument("--no-levels", action="store_true", help="不在图上标注条件单价")
     p.add_argument(
         "--json",
@@ -149,6 +154,7 @@ def _run_plot(preset: str, argv: list[str] | None = None) -> int:
     try:
         k = _load_kline(client, args)
         out = args.output or _default_output(preset, args.symbol or k.get("symbol"))
+        causal = not bool(getattr(args, "retrospective_channel", False))
         if preset == "width":
             path = plot_channel_width(
                 k,
@@ -158,6 +164,7 @@ def _run_plot(preset: str, argv: list[str] | None = None) -> int:
                 channel_width=args.channel_width,
                 show_levels=not args.no_levels,
                 full_range=not args.single_window,
+                causal=causal,
             )
         elif preset == "ke":
             path = plot_kinetic_energy(
@@ -168,6 +175,7 @@ def _run_plot(preset: str, argv: list[str] | None = None) -> int:
                 channel_width=args.channel_width,
                 show_levels=not args.no_levels,
                 full_range=not args.single_window,
+                causal=causal,
             )
         else:
             path = plot_close_curve(
@@ -178,6 +186,7 @@ def _run_plot(preset: str, argv: list[str] | None = None) -> int:
                 channel_width=args.channel_width,
                 show_levels=not args.no_levels,
                 full_range=not args.single_window,
+                causal=causal,
             )
         report = None
         energy = None
@@ -188,6 +197,7 @@ def _run_plot(preset: str, argv: list[str] | None = None) -> int:
                 channel_window=args.channel_window,
                 channel_width=args.channel_width,
                 full_range=not args.single_window,
+                causal=causal,
             )
         if preset == "ke":
             from .energy import compute_kinetic_energy

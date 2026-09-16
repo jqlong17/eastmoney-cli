@@ -9,7 +9,8 @@ def caption_for_channel(channel: str, *, has_levels: bool) -> list[str]:
     kinds = {p.strip().lower() for p in channel.replace("+", ",").split(",") if p.strip()}
     lines = [
         "上半图是价格走势；下半图柱子是成交量——柱越高，这根 K 线交易越活跃。",
-        "彩色轨道是「价格通道」：价格多数时间在上下轨之间来回；靠近下轨偏观察买，靠近上轨偏观察卖。",
+        "彩色轨道是「价格通道」：默认按因果滚动拟合——每一根只用当时及之前的窗口，"
+        "不会把后面主升的斜线提前画进前面的下跌段（不是后视镜）。",
     ]
     if kinds & {"vwreg", "vw", "volreg", "vwlinreg"}:
         lines.append(
@@ -23,6 +24,7 @@ def caption_for_channel(channel: str, *, has_levels: bool) -> list[str]:
         lines.append(
             "虚线水平价是可抄到东方财富「条件单」的参考触发价（研究用，工具不会自动下单）。"
         )
+    lines.append("若需旧版「整段一次拟合」的回顾通道，可加 --retrospective-channel（仅对比用）。")
     lines.append("横轴只保留交易时段，已去掉午休/隔夜空洞，所以看起来是连续的。")
     return lines
 

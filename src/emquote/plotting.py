@@ -182,6 +182,7 @@ def plot_close_curve(
     channel_width: float = 2.0,
     show_levels: bool = True,
     full_range: bool = True,
+    causal: bool = True,
 ) -> Path:
     try:
         import matplotlib
@@ -233,6 +234,7 @@ def plot_close_curve(
             width=channel_width,
             interval=str(kline.get("interval") or "5m"),
             full_range=full_range,
+            causal=causal,
         )
         segments = packed.get("segments") or [packed]
         bit = _draw_segments(ax_price, xs, segments, kind=kind)
@@ -246,6 +248,7 @@ def plot_close_curve(
             channel_window=channel_window,
             channel_width=channel_width,
             full_range=full_range,
+            causal=causal,
         )
         # 图上优先标注第一种通道的条件单价，避免多组水平线打架。
         if report.get("suggestions"):
@@ -348,6 +351,7 @@ def plot_channel_width(
     channel_width: float = 2.0,
     show_levels: bool = True,
     full_range: bool = True,
+    causal: bool = True,
 ) -> Path:
     """通道宽度图：上价格+通道，下相对宽度%（不确定性）。"""
     try:
@@ -399,6 +403,7 @@ def plot_channel_width(
             width=channel_width,
             interval=str(kline.get("interval") or "5m"),
             full_range=full_range,
+            causal=causal,
         )
         segments = packed.get("segments") or [packed]
         bit = _draw_segments(ax_price, xs, segments, kind=kind)
@@ -412,6 +417,7 @@ def plot_channel_width(
             width=channel_width,
             interval=str(kline.get("interval") or "5m"),
             full_range=full_range,
+            causal=causal,
         )
         width_reports.append(wrep)
         series = wrep["series_pct"]
@@ -449,6 +455,7 @@ def plot_channel_width(
             channel_window=channel_window,
             channel_width=channel_width,
             full_range=full_range,
+            causal=causal,
         )
         if report.get("suggestions"):
             primary_suggestion = report["suggestions"][0]
@@ -517,6 +524,7 @@ def plot_kinetic_energy(
     channel_width: float = 2.0,
     show_levels: bool = True,
     full_range: bool = True,
+    causal: bool = True,
     vol_ma: int = 20,
     vel_smooth: int = 3,
 ) -> Path:
@@ -572,6 +580,7 @@ def plot_kinetic_energy(
             width=channel_width,
             interval=str(kline.get("interval") or "5m"),
             full_range=full_range,
+            causal=causal,
         )
         segments = packed.get("segments") or [packed]
         bit = _draw_segments(ax_price, xs, segments, kind=kind)
@@ -586,6 +595,7 @@ def plot_kinetic_energy(
             channel_window=channel_window,
             channel_width=channel_width,
             full_range=full_range,
+            causal=causal,
         )
         if report.get("suggestions"):
             primary_suggestion = report["suggestions"][0]

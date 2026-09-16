@@ -83,6 +83,47 @@ class LevelsEnergyTests(unittest.TestCase):
         e = compute_kinetic_energy(k["bars"])
         self.assertTrue((e.get("assessment") or {}).get("causal"))
 
+    def test_rolling_channel_not_rearview(self) -> None:
+        """下跌段不应被主升后的回顾拟合「提前画成向上斜线」。"""
+        from emquote.levels import compute_channel_segments
+
+        bars = []
+        for i in range(60):
+            p = 20.0 - i * 0.05  # 缓跌
+            bars.append(
+                {
+                    "open": p,
+                    "high": p + 0.02,
+                    "low": p - 0.02,
+                    "close": p,
+                    "volume": 1000,
+                }
+            )
+        for i in range(60):
+            p = 17.0 + i * 0.12  # 主升
+            bars.append(
+                {
+                    "open": p,
+                    "high": p + 0.05,
+                    "low": p - 0.02,
+                    "close": p,
+                    "volume": 2000,
+                }
+            )
+        trough = 59
+        causal = compute_channel_segments(
+            bars, kind="reg", window=40, width=2.0, interval="5m", full_range=True, causal=True
+        )[0]
+        retro = compute_channel_segments(
+            bars, kind="reg", window=0, width=2.0, interval="5m", full_range=False, causal=False
+        )[0]
+        # 因果：跌势段中轴应整体下行
+        self.assertLess(causal["mid"][trough], causal["mid"][20])
+        # 回顾全样本：主升会把中轴拉成上行，跌势段末点高于更早点（后视镜）
+        self.assertGreater(retro["mid"][trough], retro["mid"][20])
+        self.assertTrue(causal.get("causal"))
+        self.assertFalse(retro.get("causal"))
+
 
 class TouchEngineTests(unittest.TestCase):
     def test_build_rails_and_simulate(self) -> None:

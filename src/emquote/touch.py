@@ -39,6 +39,7 @@ def build_rails(
         width=channel_width,
         interval=interval,
         full_range=False,
+        causal=True,
     )
     lower = float(packed["last_lower"])
     mid = float(packed["last_mid"])
