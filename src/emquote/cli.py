@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from .calibrate import calibrate_multi
+from .calibrate import calibrate_multi, print_calibration_report
 from .client import EastMoneyClient, QuoteError
 from .levels import parse_channels, suggest_condition_orders
 from .plan import build_condition_plan, print_condition_plan
@@ -367,46 +367,7 @@ def main(argv: list[str] | None = None) -> int:
             if args.json:
                 _emit_json(report)
             else:
-                print("条件单历史校准（walk-forward · 研究用）")
-                print(
-                    f"标的: {report.get('name')} {report.get('symbol')}  "
-                    f"周期: {report.get('interval')}  建议主通道: {report.get('suggested_primary')}"
-                )
-                print(report.get("note"))
-                for kind, item in (report.get("by_kind") or {}).items():
-                    print()
-                    print(f"【{kind}】")
-                    if not item.get("ok"):
-                        print(f"  跳过: {item.get('reason')}")
-                        continue
-                    rates = item.get("rates") or {}
-                    eb = item.get("empirical_bayes") or {}
-                    print(
-                        f"  决策点: {item.get('decisions')}  质量: {item.get('quality')}  "
-                        f"EB: {eb.get('mode')}"
-                    )
-                    print(
-                        f"  成交后验: {rates.get('fill', {}).get('mean')}  "
-                        f"先止盈|成交: {rates.get('tp_given_fill', {}).get('mean')}  "
-                        f"CI80={rates.get('tp_given_fill', {}).get('ci80')}  "
-                        f"先止损|成交: {rates.get('stop_given_fill', {}).get('mean')}"
-                    )
-                    print(f"  counts: {item.get('counts')}")
-                    print(f"  → {item.get('hint')}")
-                scans = report.get("parameter_scan") or {}
-                for kind, sc in scans.items():
-                    print()
-                    print(f"【参数扫描 {kind}】稳定性={sc.get('stability')}  "
-                          f"tp={sc.get('tp_mean_avg')}±{sc.get('tp_mean_std')}")
-                    print(f"  {sc.get('note')}")
-                    if sc.get("best"):
-                        b = sc["best"]
-                        print(
-                            f"  较优网格: window={b.get('window')} σ={b.get('width')} "
-                            f"edge={b.get('edge')}"
-                        )
-                print()
-                print("声明: 单票短样本回放，不是未来胜率。")
+                print_calibration_report(report)
             return 0
 
     except (QuoteError, ValueError, RuntimeError) as exc:

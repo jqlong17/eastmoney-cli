@@ -84,10 +84,10 @@ emplot-ke 603606.SH -o ke.png --json
 ## 常用命令
 
 ```bash
-# 波段条件单方案（买入区/止盈/止损/有效期/失效条件 + 历史校准）
+# 波段条件单方案（契约章节：结论/轨位/风控/校准/失效/数据边界；与校准共用触达引擎）
 emquote plan 603606.SH -i 5m --days 10 --channel vwreg,donchian --capital 100000 --risk-pct 0.01
 emquote plan 603606.SH -i 5m --days 20 --channel vwreg,donchian --scan --json
-# 只要回放命中后验（walk-forward）；可加 --scan 做参数稳定性
+# 只要回放命中后验（walk-forward + fold 成绩单）；可加 --scan 看参数热力
 emquote calibrate 603606.SH -i 5m --days 20 --channel vwreg,donchian --scan
 
 # 实时报价

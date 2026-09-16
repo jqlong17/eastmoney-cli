@@ -6,6 +6,7 @@
 3. 成交后，在剩余有效期内看先触止盈还是先触止损。
 4. 结果：tp_first / stop_first / expire_unfilled / timeout_after_fill。
 
+轨位与触达模拟见 touch.py（与 plan 共享）。
 输出频率 + Beta-Binomial 弱先验收缩后验（经验贝叶斯味道）。
 """
 
@@ -13,8 +14,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from .levels import compute_channel, round_price
-from .risk import atr, min_stop_gap, net_risk_reward, round_trip_cost_pct
+from .risk import net_risk_reward, round_trip_cost_pct
+from .touch import build_rails, simulate_touch
 
 
 def _bars_per_day(interval: str) -> int:
@@ -99,7 +100,7 @@ def _walk_outcomes(
     for t in range(w - 1, last_t + 1, step):
         slice_bars = bars[t - w + 1 : t + 1]
         try:
-            rails = _rails_for_kind(
+            rails = build_rails(
                 slice_bars,
                 kind=kind,
                 channel_width=channel_width,
@@ -107,9 +108,9 @@ def _walk_outcomes(
             )
         except ValueError:
             continue
-        if rails["buy"] <= rails["stop"] or rails["sell"] <= rails["buy"]:
+        if float(rails["buy"]) <= float(rails["stop"]) or float(rails["sell"]) <= float(rails["buy"]):
             continue
-        outcome = _simulate_one(bars, t, rails, horizon=horizon)
+        outcome = simulate_touch(bars, t, rails, horizon=horizon)
         outcomes.append(outcome)
         if outcome in {"tp_first", "stop_first"}:
             rr = net_risk_reward(rails["buy"], rails["sell"], rails["stop"], cost_pct=cost_pct)
@@ -118,6 +119,97 @@ def _walk_outcomes(
             else:
                 filled_net_rs.append(-1.0)
     return outcomes, filled_net_rs
+
+
+def _fold_scorecard(outcomes: list[str], *, n_folds: int = 4) -> dict[str, Any]:
+    """把决策序列切成时序 fold，输出稳定性成绩单。"""
+    n = len(outcomes)
+    if n < 4:
+        return {
+            "ok": False,
+            "reason": "决策点过少，不做 fold 切分",
+            "n_folds": 0,
+            "folds": [],
+            "badge": "insufficient",
+        }
+    folds_n = min(max(int(n_folds), 2), n)
+    size = n // folds_n
+    folds: list[dict[str, Any]] = []
+    tp_means: list[float] = []
+    for i in range(folds_n):
+        start = i * size
+        end = n if i == folds_n - 1 else (i + 1) * size
+        chunk = outcomes[start:end]
+        if not chunk:
+            continue
+        c = _count_outcomes(chunk)
+        filled = c["tp_first"] + c["stop_first"] + c["timeout_after_fill"]
+        fill_rate = filled / len(chunk)
+        tp_rate = c["tp_first"] / max(filled, 1)
+        stop_rate = c["stop_first"] / max(filled, 1)
+        edge = tp_rate - stop_rate
+        tp_means.append(tp_rate)
+        if filled == 0:
+            label = "no_fill"
+        elif edge > 0.08:
+            label = "tp_lean"
+        elif edge < -0.08:
+            label = "stop_heavy"
+        else:
+            label = "mixed"
+        folds.append(
+            {
+                "fold": i + 1,
+                "decisions": len(chunk),
+                "filled": filled,
+                "fill_rate": round(fill_rate, 4),
+                "tp_given_fill": round(tp_rate, 4),
+                "stop_given_fill": round(stop_rate, 4),
+                "edge": round(edge, 4),
+                "label": label,
+                "counts": c,
+            }
+        )
+    if len(tp_means) >= 2:
+        mean_tp = sum(tp_means) / len(tp_means)
+        var = sum((x - mean_tp) ** 2 for x in tp_means) / len(tp_means)
+        std = var ** 0.5
+        signs = {
+            1 if float(e.get("edge") or 0) > 0.02 else (-1 if float(e.get("edge") or 0) < -0.02 else 0)
+            for e in folds
+        }
+        sign_flip = len(signs - {0}) > 1
+        if std <= 0.08 and not sign_flip:
+            badge = "stable"
+            note = "各 fold 先触止盈比例接近，时序上不那么飘。"
+        elif std <= 0.18:
+            badge = "moderate"
+            note = "fold 间有波动；看成绩单时勿只盯全样本均值。"
+        else:
+            badge = "fragile"
+            note = "fold 间结论差很大，全样本漂亮也可能是某一段运气。"
+        if sign_flip and badge == "stable":
+            badge = "moderate"
+            note = "edge 符号在 fold 间翻转，稳健性打折。"
+    else:
+        mean_tp = tp_means[0] if tp_means else None
+        std = None
+        badge = "insufficient"
+        note = "有效 fold 不足。"
+
+    return {
+        "ok": True,
+        "n_folds": len(folds),
+        "folds": folds,
+        "tp_given_fill_avg": None if mean_tp is None else round(mean_tp, 4),
+        "tp_given_fill_std": None if std is None else round(std, 4),
+        "badge": badge,
+        "note": note,
+        "how_to_read": (
+            "fold 按时间顺序切分；badge=stable/moderate/fragile 描述段间一致性，"
+            "不是胜率承诺。"
+        ),
+    }
 
 
 def calibrate_condition_orders(
@@ -129,6 +221,7 @@ def calibrate_condition_orders(
     validity_days: int = 5,
     step_days: float = 0.5,
     cost_pct: float | None = None,
+    n_folds: int = 4,
 ) -> dict[str, Any]:
     """对单通道风格做 walk-forward 触达校准（含同票时序经验贝叶斯）。"""
     bars = kline.get("bars") or []
@@ -148,6 +241,7 @@ def calibrate_condition_orders(
             "bars": len(bars),
             "need_at_least": w + horizon + 5,
             "kind": kind,
+            "engine": "shared_touch",
         }
 
     outcomes, filled_net_rs = _walk_outcomes(
@@ -207,6 +301,7 @@ def calibrate_condition_orders(
         eb_mode = "weak_beta_2_2"
 
     avg_net_r = sum(filled_net_rs) / len(filled_net_rs) if filled_net_rs else None
+    folds = _fold_scorecard(outcomes, n_folds=n_folds)
 
     if decisions < 8:
         hint = "同窗决策点过少，后验很宽，仅供参考，不可当作胜率承诺。"
@@ -224,9 +319,13 @@ def calibrate_condition_orders(
         hint = "先触止盈/止损接近；边缘取决于费用、滑点与日线方向过滤。"
         quality = "mixed"
 
+    if folds.get("badge") == "fragile" and quality in {"tp_lean", "mixed"}:
+        hint = f"{hint} 另：fold 成绩单显示段间 fragile，全样本优势不可外推。"
+
     return {
         "ok": True,
         "kind": kind,
+        "engine": "shared_touch",
         "heuristic": False,
         "method": "walk_forward_touch",
         "definition": {
@@ -238,6 +337,8 @@ def calibrate_condition_orders(
             "ambiguity": "同一根既触止盈又触止损 → 记 stop_first（保守）",
             "no_lookahead": "决策只用当时末 W 根估计通道",
             "empirical_bayes": eb_mode,
+            "rails_builder": "emquote.touch.build_rails",
+            "simulator": "emquote.touch.simulate_touch",
         },
         "cost_pct_round_trip": cost_pct,
         "decisions": decisions,
@@ -256,6 +357,7 @@ def calibrate_condition_orders(
             "prior_tp": {"alpha": prior_tp_a, "beta": prior_tp_b},
             "note": "前半段决策构造先验，后半段更新；样本少时退回 Beta(2,2)",
         },
+        "folds": folds,
         "avg_net_r_when_resolved": None if avg_net_r is None else round(avg_net_r, 4),
         "quality": quality,
         "hint": hint,
@@ -264,6 +366,16 @@ def calibrate_condition_orders(
             "未完整覆盖涨跌停无法成交、停牌与冲击成本。"
         ),
     }
+
+
+def _edge_cell(edge: float | None) -> str:
+    if edge is None:
+        return "  · "
+    if edge >= 0.08:
+        return f"+{edge:.2f}"
+    if edge <= -0.08:
+        return f"{edge:.2f}"
+    return f"{edge:+.2f}"
 
 
 def scan_parameter_stability(
@@ -299,6 +411,7 @@ def scan_parameter_stability(
                 continue
             tp = (item.get("rates") or {}).get("tp_given_fill") or {}
             st = (item.get("rates") or {}).get("stop_given_fill") or {}
+            fold_badge = ((item.get("folds") or {}).get("badge"))
             rows.append(
                 {
                     "window": w,
@@ -306,6 +419,7 @@ def scan_parameter_stability(
                     "ok": True,
                     "decisions": item.get("decisions"),
                     "quality": item.get("quality"),
+                    "fold_badge": fold_badge,
                     "tp_mean": tp.get("mean"),
                     "stop_mean": st.get("mean"),
                     "edge": round(float(tp.get("mean") or 0) - float(st.get("mean") or 0), 4),
@@ -320,6 +434,7 @@ def scan_parameter_stability(
         var_tp = sum((x - mean_tp) ** 2 for x in tp_vals) / len(tp_vals)
         std_tp = var_tp ** 0.5
         best = max(ok_rows, key=lambda r: float(r.get("edge") or -9))
+        worst = min(ok_rows, key=lambda r: float(r.get("edge") or 9))
         if std_tp <= 0.05:
             stability = "stable"
             note = "不同 window/σ 下触止盈后验波动较小，参数不那么脆弱。"
@@ -333,113 +448,62 @@ def scan_parameter_stability(
         mean_tp = None
         std_tp = None
         best = None
+        worst = None
         stability = "insufficient"
         note = "有效扫描点不足。"
 
-    return {
-        "kind": kind,
-        "grid": rows,
+    heat_rows: list[str] = []
+    header = "window\\" + "σ".ljust(4) + "  " + "  ".join(f"{s:.1f}".rjust(5) for s in widths)
+    heat_rows.append(header)
+    for w in windows:
+        cells = []
+        for sigma in widths:
+            hit = next(
+                (r for r in rows if r.get("window") == w and r.get("width") == sigma),
+                None,
+            )
+            if not hit or not hit.get("ok"):
+                cells.append("  ·  ")
+            else:
+                cells.append(_edge_cell(hit.get("edge")).rjust(5))
+        heat_rows.append(f"{str(w).rjust(8)}  " + "  ".join(cells))
+
+    scorecard = {
+        "stability": stability,
         "tp_mean_avg": None if mean_tp is None else round(mean_tp, 4),
         "tp_mean_std": None if std_tp is None else round(std_tp, 4),
         "edge_avg": round(sum(edge_vals) / len(edge_vals), 4) if edge_vals else None,
+        "best_edge": (best or {}).get("edge") if best else None,
+        "worst_edge": (worst or {}).get("edge") if worst else None,
+        "n_ok": len(ok_rows),
+        "n_grid": len(rows),
+        "badge_zh": {
+            "stable": "稳",
+            "moderate": "一般",
+            "fragile": "脆",
+            "insufficient": "样本不足",
+        }.get(stability, stability),
+        "how_to_read": (
+            "热力格为 edge=先止盈后验−先止损后验；"
+            "稳=格子差不多；脆=换参数结论大变。"
+        ),
+    }
+
+    return {
+        "kind": kind,
+        "engine": "shared_touch",
+        "grid": rows,
+        "heatmap_ascii": heat_rows,
+        "scorecard": scorecard,
+        "tp_mean_avg": scorecard["tp_mean_avg"],
+        "tp_mean_std": scorecard["tp_mean_std"],
+        "edge_avg": scorecard["edge_avg"],
         "best": best,
+        "worst": worst,
         "stability": stability,
         "note": note,
         "disclaimer": "参数扫描仍是同票短样本内比较，不是跨市场稳健性证明。",
     }
-
-
-def _rails_for_kind(
-    bars_slice: list[dict[str, Any]],
-    *,
-    kind: str,
-    channel_width: float,
-    interval: str,
-) -> dict[str, float]:
-    packed = compute_channel(
-        bars_slice,
-        kind=kind,
-        window=0,
-        width=channel_width,
-        interval=interval,
-        full_range=False,
-    )
-    lower = float(packed["last_lower"])
-    mid = float(packed["last_mid"])
-    upper = float(packed["last_upper"])
-    last_close = float(bars_slice[-1]["close"])
-    pad = max(round_price(last_close * 0.002), 0.01)
-    gap_info = min_stop_gap(last_close, bars_slice)
-    gap = float(gap_info["gap"])
-
-    if kind == "donchian":
-        buy = round_price(upper + pad)
-        # 突破后止盈：买入价上方至少半通道或 ATR 间距
-        half = max(abs(upper - mid), gap)
-        sell = round_price(buy + half)
-        stop = round_price(mid)
-        buy_low, buy_high = buy, round_price(buy * 1.005)
-    else:
-        buy = round_price(lower)
-        sell = round_price(upper)
-        stop = round_price(lower - pad)
-        band = max(round_price(abs(mid - buy) * 0.25), 0.02)
-        buy_low = round_price(max(stop + 0.01, buy - band))
-        buy_high = round_price(buy + band)
-        if buy_low - stop < gap:
-            stop = round_price(buy_low - gap)
-
-    return {
-        "buy": float(buy),
-        "sell": float(sell),
-        "stop": float(stop),
-        "buy_low": float(buy_low),
-        "buy_high": float(buy_high),
-        "mid": float(mid),
-        "lower": lower,
-        "upper": upper,
-    }
-
-
-def _simulate_one(
-    bars: list[dict[str, Any]],
-    t: int,
-    rails: dict[str, float],
-    *,
-    horizon: int,
-) -> str:
-    """从 t 之后模拟；返回结局标签。"""
-    n = len(bars)
-    end = min(n - 1, t + horizon)
-    buy_low = rails["buy_low"]
-    buy_high = rails["buy_high"]
-    sell = rails["sell"]
-    stop = rails["stop"]
-
-    filled_at: int | None = None
-    for i in range(t + 1, end + 1):
-        lo = float(bars[i]["low"])
-        hi = float(bars[i]["high"])
-        # 触价：区间与 K 线价格带相交
-        if lo <= buy_high and hi >= buy_low:
-            filled_at = i
-            break
-    if filled_at is None:
-        return "expire_unfilled"
-
-    for j in range(filled_at + 1, end + 1):
-        lo = float(bars[j]["low"])
-        hi = float(bars[j]["high"])
-        hit_stop = lo <= stop
-        hit_tp = hi >= sell
-        if hit_stop and hit_tp:
-            # 同根歧义：保守记为止损优先（更不利）
-            return "stop_first"
-        if hit_stop:
-            return "stop_first"
-        if hit_tp:
-            return "tp_first"
-    return "timeout_after_fill"
 
 
 def calibrate_multi(
@@ -473,7 +537,9 @@ def calibrate_multi(
         if tp is None or st is None:
             return -1.0
         n = float(item.get("decisions") or 0)
-        return float(tp) - float(st) + min(n, 30) / 300.0
+        fold_badge = ((item.get("folds") or {}).get("badge")) or ""
+        fold_pen = {"fragile": -0.03, "moderate": -0.01}.get(fold_badge, 0.0)
+        return float(tp) - float(st) + min(n, 30) / 300.0 + fold_pen
 
     best = None
     best_s = -1e9
@@ -495,6 +561,7 @@ def calibrate_multi(
         "symbol": kline.get("symbol"),
         "name": kline.get("name"),
         "interval": kline.get("interval"),
+        "engine": "shared_touch",
         "by_kind": by_kind,
         "suggested_primary": best,
         "parameter_scan": scans,
@@ -555,3 +622,82 @@ def pick_primary_by_regime(
             return by_ch[pref], meta
     meta["source"] = "fallback"
     return suggestions[0], meta
+
+
+def print_calibration_report(report: dict[str, Any]) -> None:
+    """人读版校准报告（含 fold 成绩单与扫描热力）。"""
+    print("条件单历史校准（walk-forward · 共享触达引擎 · 研究用）")
+    print(
+        f"标的: {report.get('name')} {report.get('symbol')}  "
+        f"周期: {report.get('interval')}  建议主通道: {report.get('suggested_primary')}"
+    )
+    print(report.get("note"))
+    for kind, item in (report.get("by_kind") or {}).items():
+        print()
+        print(f"【{kind}】")
+        if not item.get("ok"):
+            print(f"  跳过: {item.get('reason')}")
+            continue
+        rates = item.get("rates") or {}
+        eb = item.get("empirical_bayes") or {}
+        folds = item.get("folds") or {}
+        print(
+            f"  决策点: {item.get('decisions')}  质量: {item.get('quality')}  "
+            f"EB: {eb.get('mode')}  fold徽章: {folds.get('badge')}"
+        )
+        print(
+            f"  成交后验: {rates.get('fill', {}).get('mean')}  "
+            f"先止盈|成交: {rates.get('tp_given_fill', {}).get('mean')}  "
+            f"CI80={rates.get('tp_given_fill', {}).get('ci80')}  "
+            f"先止损|成交: {rates.get('stop_given_fill', {}).get('mean')}"
+        )
+        print(f"  counts: {item.get('counts')}")
+        if folds.get("ok") and folds.get("folds"):
+            print("  —— fold 成绩单（时序切分）——")
+            print(
+                f"  {'fold':>4}  {'n':>4}  {'fill':>6}  {'tp|fill':>7}  "
+                f"{'stop|fill':>9}  {'edge':>6}  label"
+            )
+            for f in folds["folds"]:
+                print(
+                    f"  {f.get('fold'):>4}  {f.get('decisions'):>4}  "
+                    f"{float(f.get('fill_rate') or 0):>6.2f}  "
+                    f"{float(f.get('tp_given_fill') or 0):>7.2f}  "
+                    f"{float(f.get('stop_given_fill') or 0):>9.2f}  "
+                    f"{float(f.get('edge') or 0):>+6.2f}  {f.get('label')}"
+                )
+            print(
+                f"  fold汇总: tp均值={folds.get('tp_given_fill_avg')}  "
+                f"std={folds.get('tp_given_fill_std')}  → {folds.get('note')}"
+            )
+        print(f"  → {item.get('hint')}")
+
+    scans = report.get("parameter_scan") or {}
+    for kind, sc in scans.items():
+        print()
+        card = sc.get("scorecard") or {}
+        print(
+            f"【参数扫描 {kind}】稳定性={sc.get('stability')}（{card.get('badge_zh')}）  "
+            f"tp={sc.get('tp_mean_avg')}±{sc.get('tp_mean_std')}"
+        )
+        print(f"  {sc.get('note')}")
+        if sc.get("heatmap_ascii"):
+            print("  —— edge 热力（window × σ）——")
+            for line in sc["heatmap_ascii"]:
+                print(f"  {line}")
+        if sc.get("best"):
+            b = sc["best"]
+            print(
+                f"  较优网格: window={b.get('window')} σ={b.get('width')} "
+                f"edge={b.get('edge')} fold={b.get('fold_badge')}"
+            )
+        if sc.get("worst"):
+            wrow = sc["worst"]
+            print(
+                f"  较差网格: window={wrow.get('window')} σ={wrow.get('width')} "
+                f"edge={wrow.get('edge')}"
+            )
+        if card.get("how_to_read"):
+            print(f"  读表: {card.get('how_to_read')}")
+    print()
+    print("声明: 单票短样本回放，不是未来胜率；引擎=shared_touch。")
