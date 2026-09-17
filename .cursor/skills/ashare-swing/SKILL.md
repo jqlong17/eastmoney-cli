@@ -67,6 +67,9 @@ emplot-pv 603606.SH -o /tmp/pv.png --json
 emplot-width 603606.SH -o /tmp/width.png --json
 emplot-ke 603606.SH -o /tmp/ke.png --json
 emquote plan 603606.SH -i 5m --days 10 --channel vwreg,donchian --json
+# 滚动日记：存当天方案，日后对照现价
+emquote journal save 603606.SH --note "周复盘"
+emquote journal diff 603606.SH
 ```
 
 K 线有本地缓存（`~/.cache/emquote/kline/`）；失败会回退缓存/离线样例。强制重拉用 `--refresh`。

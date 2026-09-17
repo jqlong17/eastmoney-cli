@@ -95,6 +95,13 @@ emquote calibrate 603606.SH -i 5m --days 20 --channel vwreg,donchian --scan
 emquote quote 603606.SH
 emquote quote 002223.SZ --json
 
+# 滚动日记：把当天 plan 存成时间戳 JSON，日后对照现价复盘（不下单）
+emquote journal save 603606.SH --note "观察池周复盘"
+emquote journal list 603606.SH
+emquote journal diff 603606.SH
+emquote journal diff 603606.SH 20260917-224500 --price 35.52 --no-kline
+# 目录默认 ~/.local/share/emquote/journal/（可用 EMQUOTE_JOURNAL_DIR 或 --dir）
+
 # 最近 10 个交易日 · 5 分钟 K 线（成交价序列；默认前复权 qfq）
 emquote kline 603606.SH -i 5m --days 10
 emquote kline 603606.SH -i 5m --days 10 --csv > bars.csv
@@ -178,6 +185,7 @@ K 线蜡烛（`emplot-kline`）：
 | `plot` 价格/成交量图 | ✅ | 上价格、下成交量；可叠加 reg/vwreg/donchian/hl |
 | `levels` 条件单参考价 | ✅ | 给出买入/卖出/止损触价，人工录入东财 |
 | `plan` 条件单方案 | ✅ | 轨位 + ATR + 费用后 RR + 仓位预算 + 涨跌停检查 + 时序校准 |
+| `journal` 滚动日记 | ✅ | 时间戳保存 plan JSON；`list` / `diff` 对照现价与当时轨位（复盘，不下单） |
 | `calibrate` 历史校准 | ✅ | walk-forward 触达后验；可选 `--scan` 参数稳定性 |
 | K 线本地缓存 | ✅ | `~/.cache/emquote/kline/`，断线可回退；`--refresh` 强刷 |
 | `ashare-swing` Skill | ✅ | Cursor 中短线看盘：出图 + 条件单价 + 研究备注 |

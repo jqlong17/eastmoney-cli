@@ -11,6 +11,17 @@ from typing import Any
 
 from .calibrate import calibrate_multi, print_calibration_report
 from .client import EastMoneyClient, QuoteError
+from .journal import (
+    build_snapshot,
+    default_journal_dir,
+    diff_snapshot,
+    list_snapshots,
+    print_diff,
+    print_snapshot_list,
+    print_snapshot_saved,
+    resolve_snapshot,
+    save_snapshot,
+)
 from .levels import parse_channels, suggest_condition_orders
 from .plan import build_condition_plan, print_condition_plan
 from .plotting import plot_close_curve, print_condition_levels
@@ -249,6 +260,59 @@ def build_parser() -> argparse.ArgumentParser:
         help="扫描 channel_window×σ 稳定性",
     )
     pc.add_argument("--json", action="store_true", help="输出 JSON")
+
+    pj = sub.add_parser(
+        "journal",
+        help="滚动保存 plan 快照，日后 list/diff 对照现价（复盘用，不下单）",
+    )
+    jsub = pj.add_subparsers(dest="journal_cmd", required=True)
+
+    js = jsub.add_parser("save", help="把当前 plan 存成带时间戳的 JSON 快照")
+    _add_kline_fetch_args(js)
+    _add_channel_args(js, default="vwreg,donchian")
+    js.add_argument("--json", action="store_true", help="输出 JSON")
+    js.add_argument("--note", default="", help="给这张快照写一句备注")
+    js.add_argument(
+        "--dir",
+        default=None,
+        help="日记目录（默认 ~/.local/share/emquote/journal，可用 EMQUOTE_JOURNAL_DIR）",
+    )
+    js.add_argument(
+        "--full",
+        action="store_true",
+        help="连 calibration_detail / levels_report 一并写入（文件更大）",
+    )
+    js.add_argument("--no-calibrate", action="store_true", help="跳过 walk-forward 校准")
+    js.add_argument("--scan", action="store_true", help="附加参数扫描")
+    js.add_argument("--capital", type=float, default=None, help="账户资金（元）")
+    js.add_argument("--risk-pct", type=float, default=0.01, help="单笔风险占比，默认 0.01")
+
+    jl = jsub.add_parser("list", help="列出已保存的 plan 快照")
+    jl.add_argument("symbol", nargs="?", default=None, help="只看某一标的；省略则全部")
+    jl.add_argument("--dir", default=None, help="日记目录")
+    jl.add_argument("--json", action="store_true", help="输出 JSON")
+
+    jd = jsub.add_parser("diff", help="把某张快照的轨位对照当前价（或指定价）")
+    jd.add_argument("symbol", help="如 603606.SH")
+    jd.add_argument(
+        "snapshot",
+        nargs="?",
+        default=None,
+        help="时间戳或 id（如 20260917-224500）；省略则用最新一张",
+    )
+    jd.add_argument("--dir", default=None, help="日记目录")
+    jd.add_argument("--json", action="store_true", help="输出 JSON")
+    jd.add_argument(
+        "--price",
+        type=float,
+        default=None,
+        help="手工指定对照价；不传则拉实时报价",
+    )
+    jd.add_argument(
+        "--no-kline",
+        action="store_true",
+        help="不拉 K 线做路径复盘，只比现价与轨位",
+    )
     return p
 
 
@@ -381,7 +445,75 @@ def main(argv: list[str] | None = None) -> int:
                 print_calibration_report(report)
             return 0
 
-    except (QuoteError, ValueError, RuntimeError) as exc:
+        if args.cmd == "journal":
+            root = Path(args.dir).expanduser() if getattr(args, "dir", None) else default_journal_dir()
+            if args.journal_cmd == "save":
+                k = _fetch_kline(client, args)
+                kinds = parse_channels(args.channel)
+                plan = build_condition_plan(
+                    k,
+                    channels=kinds,
+                    channel_window=args.channel_window,
+                    channel_width=args.channel_width,
+                    full_range=not args.single_window,
+                    causal=not bool(getattr(args, "retrospective_channel", False)),
+                    run_calibration=not bool(getattr(args, "no_calibrate", False)),
+                    with_param_scan=bool(getattr(args, "scan", False)),
+                    capital=getattr(args, "capital", None),
+                    risk_pct=float(getattr(args, "risk_pct", 0.01) or 0.01),
+                )
+                quote = None
+                if args.symbol:
+                    try:
+                        quote = client.quote(args.symbol)
+                    except QuoteError:
+                        quote = None
+                snap = build_snapshot(
+                    plan=plan,
+                    quote=quote,
+                    note=str(getattr(args, "note", "") or ""),
+                    full_plan=bool(getattr(args, "full", False)),
+                )
+                path = save_snapshot(snap, root=root)
+                if args.json:
+                    _emit_json({"path": str(path), "snapshot": snap})
+                else:
+                    print_snapshot_saved(path, snap)
+                return 0
+
+            if args.journal_cmd == "list":
+                rows = list_snapshots(args.symbol, root=root)
+                if args.json:
+                    _emit_json(rows)
+                else:
+                    print_snapshot_list(rows)
+                return 0
+
+            if args.journal_cmd == "diff":
+                snap = resolve_snapshot(args.symbol, args.snapshot, root=root)
+                last_time = None
+                if args.price is not None:
+                    last = float(args.price)
+                else:
+                    q = client.quote(args.symbol)
+                    last = float(q["last"])
+                    last_time = str(q.get("time") or "")
+                bars = None
+                if not bool(getattr(args, "no_kline", False)):
+                    try:
+                        interval = str((snap.get("forecast") or {}).get("interval") or "5m")
+                        k = client.kline(args.symbol, interval=interval, days=20, adjust="qfq")
+                        bars = k.get("bars")
+                    except QuoteError:
+                        bars = None
+                report = diff_snapshot(snap, last=last, last_time=last_time, bars=bars)
+                if args.json:
+                    _emit_json(report)
+                else:
+                    print_diff(report)
+                return 0
+
+    except (QuoteError, ValueError, RuntimeError, FileNotFoundError, OSError) as exc:
         print(f"失败: {exc}", file=sys.stderr)
         return 1
     return 2
